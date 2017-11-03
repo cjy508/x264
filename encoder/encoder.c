@@ -2295,6 +2295,10 @@ static inline void x264_reference_build_list( x264_t *h, int i_poc )
     h->mb.pic.i_fref[1] = h->i_ref[1];
 }
 
+/**
+ * 滤波-去块效应滤波、半像素插值、SSIM/PSNR计算等 
+ * 一次处理一行宏块
+ */
 static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 {
     /* mb_y is the mb to be encoded next, not the mb to be filtered here */

@@ -57,6 +57,8 @@ static inline void pixel_avg( pixel *dst,  intptr_t i_dst_stride,
     }
 }
 
+//像素求平均值  
+//在这里用于1/4像素内插
 static inline void pixel_avg_wxh( pixel *dst,  intptr_t i_dst,
                                   pixel *src1, intptr_t i_src1,
                                   pixel *src2, intptr_t i_src2, int width, int height )
@@ -167,24 +169,87 @@ static void mc_copy( pixel *src, intptr_t i_src_stride, pixel *dst, intptr_t i_d
     }
 }
 
+//半像素插值公式  
+//b= (E - 5F + 20G + 20H - 5I + J)/32  
+//              x  
+//d取1，水平滤波器；d取stride，垂直滤波器（这里没有除以32）
 #define TAPFILTER(pix, d) ((pix)[x-2*d] + (pix)[x+3*d] - 5*((pix)[x-d] + (pix)[x+2*d]) + 20*((pix)[x] + (pix)[x+d]))
+/* 
+ * 半像素插值 
+ * dsth：水平滤波得到的半像素点(aa,bb,b,s,gg,hh) 
+ * dstv：垂直滤波的到的半像素点(cc,dd,h,m,ee,ff) 
+ * dstc：“水平+垂直”滤波得到的位于4个像素中间的半像素点（j） 
+ * 
+ * 半像素插值示意图如下： 
+ * 
+ *         A aa B 
+ * 
+ *         C bb D 
+ * 
+ * E   F   G  b H   I   J 
+ * 
+ * cc  dd  h  j m  ee  ff 
+ * 
+ * K   L   M  s N   P   Q 
+ * 
+ *         R gg S 
+ * 
+ *         T hh U 
+ * 
+ * 计算公式如下： 
+ * b=round( (E - 5F + 20G + 20H - 5I + J ) / 32) 
+ * 
+ * 剩下几个半像素点的计算关系如下： 
+ * m：由B、D、H、N、S、U计算 
+ * h：由A、C、G、M、R、T计算 
+ * s：由K、L、M、N、P、Q计算 
+ * j：由cc、dd、h、m、ee、ff计算。需要注意j点的运算量比较大，因为cc、dd、ee、ff都需要通过半像素内插方法进行计算。 
+ * 
+ */ 
 static void hpel_filter( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
                          intptr_t stride, int width, int height, int16_t *buf )
 {
     const int pad = (BIT_DEPTH > 9) ? (-10 * PIXEL_MAX) : 0;
+	/* 
+     * 几种半像素点之间的位置关系 
+     * 
+     * X： 像素点 
+     * H：水平滤波半像素点 
+     * V：垂直滤波半像素点 
+     * C： 中间位置半像素点 
+     * 
+     * X   H   X       X       X 
+     * 
+     * V   C 
+     * 
+     * X       X       X       X 
+     * 
+     * 
+     * 
+     * X       X       X       X 
+     * 
+     */  
+    //一行一行处理
     for( int y = 0; y < height; y++ )
     {
-        for( int x = -2; x < width+3; x++ )
+    	//一个一个点处理  
+        //每个整像素点都对应h，v，c三个半像素点  
+        //v
+        for( int x = -2; x < width+3; x++ ) //(aa,bb,b,s,gg,hh),结果存入buf 
         {
+        	//垂直滤波半像素点
             int v = TAPFILTER(src,stride);
             dstv[x] = x264_clip_pixel( (v + 16) >> 5 );
             /* transform v for storage in a 16-bit integer */
+			//这应该是给dstc计算使用的？
             buf[x+2] = v + pad;
         }
+		//c
         for( int x = 0; x < width; x++ )
-            dstc[x] = x264_clip_pixel( (TAPFILTER(buf+2,1) - 32*pad + 512) >> 10 );
+            dstc[x] = x264_clip_pixel( (TAPFILTER(buf+2,1) - 32*pad + 512) >> 10 );//四个相邻像素中间的半像素点
+		//h
         for( int x = 0; x < width; x++ )
-            dsth[x] = x264_clip_pixel( (TAPFILTER(src,1) + 16) >> 5 );
+            dsth[x] = x264_clip_pixel( (TAPFILTER(src,1) + 16) >> 5 );//水平滤波半像素点
         dsth += stride;
         dstv += stride;
         dstc += stride;
@@ -192,6 +257,57 @@ static void hpel_filter( pixel *dsth, pixel *dstv, pixel *dstc, pixel *src,
     }
 }
 
+/* 
+ * hpel_ref0[]记录了亚像素点依赖于哪些点。数组元素共有四个取值：0，1，2，3。这四个值分别代表整数像素，水平半像素，垂直半像素，对角线半像素。 
+ * hpel_ref1[]功能是类似的。 
+ * 1/4内插点依赖于2个半像素点，所以才存在这2个数组 
+ * 
+ * 注意对最下1行像素和最右1行像素是需要特殊处理的 
+ * 
+ * hpel_ref0[qpel_idx]表示了第1次半像素内插使用的滤波器。示意如下（矩阵4个角代表4个整像素点） 
+ * 
+ * 0 1 1 1 
+ * 0 1 1 1 
+ * 2 3 3 3 
+ * 0 1 1 1 
+ * 
+ * hpel_ref1[qpel_idx]表示了第2次半像素内插使用的滤波器（只有1/4内插点才需要）。示意如下（矩阵4个角代表4个整像素点） 
+ * 0 0 0 0 
+ * 2 2 3 2 
+ * 2 2 3 2 
+ * 2 2 3 2 
+ * 
+ * 例如 
+ * qpel_idx=5的时候 
+ * hpel_ref0[5]=1，需要进行水平半像素滤波 
+ * hpel_ref1[5]=2，需要进行垂直半像素滤波 
+ * 顺序如下（X代表像素点，数字代表顺序） 
+ * X   1   X 
+ *   3 
+ * 2 
+ * 
+ * X       X 
+ * 
+ * qpel_idx=1的时候 
+ * hpel_ref0[5]=1，需要进行水平半像素滤波 
+ * hpel_ref1[5]=0，即直接使用整像素点 
+ * 顺序如下（X代表像素点，数字代表顺序） 
+ * 2 3 1   X 
+ * 
+ * 
+ * 
+ * X       X 
+ * 
+ * qpel_idx=4的时候 
+ * hpel_ref0[5]=0，即直接使用整像素点 
+ * hpel_ref1[5]=2，需要进行垂直半像素滤波 
+ * 顺序如下（X代表像素点，数字代表顺序） 
+ * 1       X 
+ * 3 
+ * 2 
+ * 
+ * X       X 
+ */
 const uint8_t x264_hpel_ref0[16] = {0,1,1,1,0,1,1,1,2,3,3,3,0,1,1,1};
 const uint8_t x264_hpel_ref1[16] = {0,0,1,0,2,2,3,2,2,2,3,2,2,2,3,2};
 
@@ -218,18 +334,62 @@ static void mc_luma( pixel *dst,    intptr_t i_dst_stride,
         mc_copy( src1, i_src_stride, dst, i_dst_stride, i_width, i_height );
 }
 
+//获取运动矢量中亚像素的部分的数据  
+//可以是半像素数据或者1/4像素数据
 static pixel *get_ref( pixel *dst,   intptr_t *i_dst_stride,
                        pixel *src[4], intptr_t i_src_stride,
                        int mvx, int mvy,
                        int i_width, int i_height, const x264_weight_t *weight )
 {
+	/* 
+     * qpel_idx为hpel_ref0[]，hpel_ref1[]的索引值 
+     * 
+     * 运动矢量(mvy,mvx)位置和qpel_idx对应关系如下 
+     *  0pixel |   0p   | 1/4p   | 1/2p   | 3/4p   | 1pixel | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *      0p | 0<<2+0 | 0<<2+1 | 0<<2+2 | 0<<2+3 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *    1/4p | 1<<2+0 | 1<<2+1 | 1<<2+2 | 1<<2+3 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *    1/2p | 2<<2+0 | 2<<2+1 | 2<<2+2 | 2<<2+3 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *    3/4p | 3<<2+0 | 3<<2+1 | 3<<2+2 | 3<<2+3 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *  1pixel | 
+     * --------+ 
+     * 计算出来后 
+     *  0pixel |   0p   | 1/4p   | 1/2p   | 3/4p   | 1pixel | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *      0p |      0 |      1 |      2 |      3 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *    1/4p |      4 |      5 |      6 |      7 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *    1/2p |      8 |      9 |     10 |     11 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *    3/4p |     12 |     13 |     14 |     15 |        | 
+     * --------+--------+--------+--------+--------+--------+ 
+     *  1pixel | 
+     * --------+ 
+     * 
+     */
     int qpel_idx = ((mvy&3)<<2) + (mvx&3);
+	//offset是匹配块相对当前宏块的整数偏移量。
     int offset = (mvy>>2)*i_src_stride + (mvx>>2);
+	//src[4]中有4个分量，分别代表：整像素点Full，水平半像素点H，垂直半像素点V，对角线半像素点C的取值（几种半像素点的值已经提前计算出来，而1/4像素点的值则是临时计算）  
+    //注意上述几种半像素点是按照“分量”的方式存储的  
+  
+    //src1[]为选择后的半像素数据  
+    //选择了Full,H,V,C几种“分量”中的1种
     pixel *src1 = src[x264_hpel_ref0[qpel_idx]] + offset + ((mvy&3) == 3) * i_src_stride;
 
+	//qpel_idx & 5，5是0101， 代表qpel_idx最后1位（对应x分量）为1或者倒数第3位为1（对应y分量）。  
+	//即x或者y中有1/4或者3/4像素点（此时需要1/4像素内插）。  
+	//只有需要1/4内插的点才会qpel_idx & 5!=0。这时候需要通过线性内插获得1/4像素点的值
     if( qpel_idx & 5 ) /* qpel interpolation needed */
     {
+    	//src2[]为用于内插的数据另一组数据
         pixel *src2 = src[x264_hpel_ref1[qpel_idx]] + offset + ((mvx&3) == 3);
+		//进行1/4像素线性内插
         pixel_avg( dst, *i_dst_stride, src1, i_src_stride,
                    src2, i_src_stride, i_width, i_height );
         if( weight->weightfn )
@@ -243,6 +403,7 @@ static pixel *get_ref( pixel *dst,   intptr_t *i_dst_stride,
     }
     else
     {
+    	//只需要半像素滤波
         *i_dst_stride = i_src_stride;
         return src1;
     }
@@ -610,13 +771,17 @@ static void mbtree_fix8_unpack( float *dst, uint16_t *src, int count )
         dst[i] = (int16_t)endian_fix16( src[i] ) * (1.0f/256.0f);
 }
 
+//运动补偿
 void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
 {
+	//亮度运动补偿
     pf->mc_luma   = mc_luma;
+	//获得匹配块
     pf->get_ref   = get_ref;
 
     pf->mc_chroma = mc_chroma;
 
+	//求平均
     pf->avg[PIXEL_16x16]= pixel_avg_16x16;
     pf->avg[PIXEL_16x8] = pixel_avg_16x8;
     pf->avg[PIXEL_8x16] = pixel_avg_8x16;
@@ -630,11 +795,12 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->avg[PIXEL_2x4]  = pixel_avg_2x4;
     pf->avg[PIXEL_2x2]  = pixel_avg_2x2;
 
+	//加权相关
     pf->weight    = x264_mc_weight_wtab;
     pf->offsetadd = x264_mc_weight_wtab;
     pf->offsetsub = x264_mc_weight_wtab;
     pf->weight_cache = x264_weight_cache;
-
+	//赋值-只包含了方形的
     pf->copy_16x16_unaligned = mc_copy_w16;
     pf->copy[PIXEL_16x16] = mc_copy_w16;
     pf->copy[PIXEL_8x8]   = mc_copy_w8;
@@ -643,7 +809,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->store_interleave_chroma       = store_interleave_chroma;
     pf->load_deinterleave_chroma_fenc = load_deinterleave_chroma_fenc;
     pf->load_deinterleave_chroma_fdec = load_deinterleave_chroma_fdec;
-
+	//拷贝像素-不论像素块大小
     pf->plane_copy = x264_plane_copy_c;
     pf->plane_copy_swap = x264_plane_copy_swap_c;
     pf->plane_copy_interleave = x264_plane_copy_interleave_c;
@@ -651,14 +817,15 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->plane_copy_deinterleave_yuyv = x264_plane_copy_deinterleave_c;
     pf->plane_copy_deinterleave_rgb = x264_plane_copy_deinterleave_rgb_c;
     pf->plane_copy_deinterleave_v210 = x264_plane_copy_deinterleave_v210_c;
-
+	//关键：半像素内插
     pf->hpel_filter = hpel_filter;
-
+	//几个空函数 
     pf->prefetch_fenc_420 = prefetch_fenc_null;
     pf->prefetch_fenc_422 = prefetch_fenc_null;
     pf->prefetch_ref  = prefetch_ref_null;
     pf->memcpy_aligned = memcpy;
     pf->memzero_aligned = memzero_aligned;
+	//降低分辨率-线性内插（不是半像素内插）
     pf->frame_init_lowres_core = frame_init_lowres_core;
 
     pf->integral_init4h = integral_init4h;
@@ -671,6 +838,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     pf->mbtree_fix8_pack      = mbtree_fix8_pack;
     pf->mbtree_fix8_unpack    = mbtree_fix8_unpack;
 
+	//各种汇编版本
 #if HAVE_MMX
     x264_mc_init_mmx( cpu, pf );
 #endif

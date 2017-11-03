@@ -179,6 +179,9 @@ do\
 #define SPEL(mv) ((mv)<<2)     /* ... and the reverse. */
 #define SPELx2(mv) (SPEL(mv)&0xFFFCFFFC) /* for two packed MVs */
 
+/**
+ * 完成了运动搜索的工作
+ */
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_halfpel_thresh )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -252,6 +255,9 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
 
         /* Round the best predictor back to fullpel and get the cost, since this is where
          * we'll be starting the fullpel motion search. */
+        //FPEL()宏定义如下  
+        //#define FPEL(mv) (((mv)+2)>>2)  
+        //即把以1/4像素为基本单位的运动矢量转换为以整像素为基本单位（加2是为了四舍五入）
         bmx = FPEL( bpred_mx );
         bmy = FPEL( bpred_my );
         bpred_mv = pack16to32_mask(bpred_mx, bpred_my);
@@ -276,6 +282,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     else
     {
         /* Calculate and check the fullpel MVP first */
+		//像素点的坐标（bmx，bmy）  
+        //FPEL()从四分之一像素MV转换为整像素MV 
         bmx = pmx = x264_clip3( FPEL(m->mvp[0]), mv_x_min, mv_x_max );
         bmy = pmy = x264_clip3( FPEL(m->mvp[1]), mv_y_min, mv_y_max );
         pmv = pack16to32_mask( bmx, bmy );
@@ -317,30 +325,93 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             COST_MV( 0, 0 );
     }
 
+	//不同的运动估计算法作不同的处理
     switch( h->mb.i_me_method )
     {
+    	//钻石（Diamond）搜索  
+        //注意这里是“小钻石”，实际上还有“大钻石”  
+        /* 
+         *   x 
+         * x x x 
+         *   x 
+         */
         case X264_ME_DIA:
         {
             /* diamond search, radius 1 */
             bcost <<= 4;
+			//i每次循环减1，  
+            //运动搜索的半径
             int i = i_me_range;
+			//循环
             do
             {
+            	//COST_MV_X4_DIR()计算4个点的MV开销  
+                //在这里以bmx,bmy为基点在周围进行其四点的cost计算  
+                //周围4个点为(0,-1),(0,1),(-1,0),(1,0)  
+                //每个点的结果存储于costs[]数组  
+                //  
+                //在这里像素比较函数可能是SAD或者SATD，参考mbcmp_init()函数  
+                //  
+                //COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs )宏展开后代码如下所示  
+                /* 
+                 *  { 
+                        pixel *pix_base = p_fref_w + bmx + bmy*stride; 
+                        //调用像素比较函数 
+                        h->pixf.fpelcmp_x4[i_pixel]( p_fenc, 
+                            pix_base + (0) + (-1)*stride,   //上 
+                            pix_base + (0) + (1)*stride,    //下 
+                            pix_base + (-1) + (0)*stride,   //左 
+                            pix_base + (1) + (0)*stride,    //右 
+                            stride, costs ); 
+                        //得到4个点的开销，存储到costs[]数组 
+                        (costs)[0] += (p_cost_mvx[(bmx+(0))<<2] + p_cost_mvy[(bmy+(-1))<<2]); 
+                        (costs)[1] += (p_cost_mvx[(bmx+(0))<<2] + p_cost_mvy[(bmy+(1))<<2]); 
+                        (costs)[2] += (p_cost_mvx[(bmx+(-1))<<2] + p_cost_mvy[(bmy+(0))<<2]); 
+                        (costs)[3] += (p_cost_mvx[(bmx+(1))<<2] + p_cost_mvy[(bmy+(0))<<2]); 
+                    } 
+                 */  
+  
+                /* 
+                 * 顺序 
+                 *   1 
+                 * 3 x 4 
+                 *   2 
+                 */
                 COST_MV_X4_DIR( 0,-1, 0,1, -1,0, 1,0, costs );
-                COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
-                COPY1_IF_LT( bcost, (costs[1]<<4)+3 );
-                COPY1_IF_LT( bcost, (costs[2]<<4)+4 );
-                COPY1_IF_LT( bcost, (costs[3]<<4)+12 );
-                if( !(bcost&15) )
+				//如果小的话，就拷贝至bcost  
+                //COPY1_IF_LT()宏定义如下  
+                //#define COPY1_IF_LT(x,y)\  
+                //if((y)<(x))\  
+                //      (x)=(y);  
+                //  
+                //这里左移了4位，加上1个数，可以理解为用于记录哪一个点开销小
+                COPY1_IF_LT( bcost, (costs[0]<<4)+1 ); // 1二进制为0001，单看1-2位，“ 1”，对应“上”像素
+                COPY1_IF_LT( bcost, (costs[1]<<4)+3 ); // 3二进制为0011，单看1-2位，“-1”，对应“下”像素
+                COPY1_IF_LT( bcost, (costs[2]<<4)+4 ); // 4二进制为0100，单看3-4位，“ 1”，对应“左”像素
+                COPY1_IF_LT( bcost, (costs[3]<<4)+12 ); //12二进制为1100，单看3-4位，“-1”，对应“右”像素
+                if( !(bcost&15) ) //后4位进行检测，如果后4位是0，就是证明所进行比较的4点开销比原点要大，所以不需要继续搜索了  
                     break;
-                bmx -= (bcost<<28)>>30;
-                bmy -= (bcost<<30)>>30;
+				//注意右移的时候是区分符号位的  
+                //改变bmx，bmy的值-决定了x和y是加1还是减1
+                bmx -= (bcost<<28)>>30; //注意不等同于除以4。左移28位后，只剩最后4位。右移30位，只剩3-4位
+                bmy -= (bcost<<30)>>30; //思路同上，只剩1-2位
                 bcost &= ~15;
-            } while( --i && CHECK_MVRANGE(bmx, bmy) );
+				//检查运动搜索范围：mv_min和mv_max  
+                //以及i
+            } while( --i && CHECK_MVRANGE(bmx, bmy) ); //检查是否越界
+            //这里右移了4位（之前左移4位）
             bcost >>= 4;
             break;
         }
 
+		//六边形（Hexagon）搜索  
+		/* 
+		 *	  x   x 
+		 * 
+		 *	x	x	x 
+		 * 
+		 *	  x   x 
+		 */
         case X264_ME_HEX:
         {
     me_hex2:
@@ -364,8 +435,23 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             /* equivalent to the above, but eliminates duplicate candidates */
 
             /* hexagon */
-            COST_MV_X3_DIR( -2,0, -1, 2,  1, 2, costs   );
-            COST_MV_X3_DIR(  2,0,  1,-2, -1,-2, costs+4 ); /* +4 for 16-byte alignment */
+			//一共计算呈六边形分布的6个点  
+            //COST_MV_X3_DIR()计算3个点的MV开销  
+            //3个点为(-2,0),(-1,2),(1,2)  
+            //开销存入costs[]  
+            COST_MV_X3_DIR( -2,0, -1, 2,  1, 2, costs   );  
+            //再计算3个点为(2,0),(1,-2),(-1,-2)  
+            COST_MV_X3_DIR(  2,0,  1,-2, -1,-2, costs+4 ); /* +4 for 16-byte alignment */  
+  
+            /* 
+             * 顺序 
+             *    2   3 
+             * 
+             *  1   x   4 
+             * 
+             *    6   5 
+             */  
+            //这里左移了3位，加上1个数，可以理解为用于记录哪一个点开销小
             bcost <<= 3;
             COPY1_IF_LT( bcost, (costs[0]<<3)+2 );
             COPY1_IF_LT( bcost, (costs[1]<<3)+3 );
@@ -374,7 +460,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             COPY1_IF_LT( bcost, (costs[5]<<3)+6 );
             COPY1_IF_LT( bcost, (costs[6]<<3)+7 );
 
-            if( bcost&7 )
+            if( bcost&7 ) //后3位进行检测，如果后3位是0，就是证明所进行比较的6点开销比原点要大，就跳过这一步
             {
                 int dir = (bcost&7)-2;
                 bmx += hex2[dir+1][0];
@@ -402,7 +488,15 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             bcost >>= 3;
     #endif
             /* square refine */
-            bcost <<= 4;
+			//正方形细化  
+            //六边形搜索之后，再进行正方形细化  
+            bcost <<= 4;  
+            /* 
+             * 分两步，标号如下所示： 
+             * 2 1 2 
+             * 1 x 1 
+             * 2 1 2 
+             */
             COST_MV_X4_DIR(  0,-1,  0,1, -1,0, 1,0, costs );
             COPY1_IF_LT( bcost, (costs[0]<<4)+1 );
             COPY1_IF_LT( bcost, (costs[1]<<4)+2 );
@@ -419,8 +513,18 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             break;
         }
 
+		//非对称十字多六边形网格（Uneven Multi-Hex）搜索
         case X264_ME_UMH:
         {
+			/* 
+             * 主要包含3个步骤 
+             * 第1步：进行混合搜索,包括如下： 
+             * A，非对称十字搜索。 
+             * B，5×5 全搜索。 
+             * C，扩展的多层次六边形(六角形)格点搜索。 
+             * 第2步：以当前最优点为中心，用六边形(六角形)进行搜索，直至最优点在六边型的中点为止。 
+             * 第3步：以当前最优点为中心，用小菱形进行搜索，直至最优点在小菱形的中点为止。 
+             */
             /* Uneven-cross Multi-Hexagon-grid Search
              * as in JM, except with different early termination */
 
@@ -614,10 +718,12 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 goto me_hex2;
             break;
         }
-
+		//穷尽搜索法（Exhaustive）,x264已经取消了这种古老的全搜索法，而是采用下面改进的搜索法
         case X264_ME_ESA:
+		//hadamard全搜索法（Transformed Exhaustive）,这个算法和ESA相比主要是在搜索范围上的变化
         case X264_ME_TESA:
         {
+			//范围：最小值和最大值
             const int min_x = X264_MAX( bmx - i_me_range, mv_x_min );
             const int min_y = X264_MAX( bmy - i_me_range, mv_y_min );
             const int max_x = X264_MIN( bmx + i_me_range, mv_x_max );
@@ -772,8 +878,12 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
         break;
     }
 
+	//	
+	//后面的代码与子像素精度的运动搜索有关	
+	//
     /* -> qpel mv */
     uint32_t bmv = pack16to32_mask(bmx,bmy);
+	//用于获得子像素精度的运动矢量的值
     uint32_t bmv_spel = SPELx2(bmv);
     if( h->mb.i_subpel_refine < 3 )
     {
@@ -790,6 +900,7 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
     }
 
     /* subpel refine */
+	//子像素精度（1/2，1/4）搜索
     if( h->mb.i_subpel_refine >= 2 )
     {
         int hpel = subpel_iterations[h->mb.i_subpel_refine][2];
@@ -863,6 +974,8 @@ if( b_refine_qpel || (dir^1) != odir ) \
     COPY4_IF_LT( bcost, cost, bmx, mx, bmy, my, bdir, dir ); \
 }
 
+//子像素精度（1/2，1/4）搜索  
+//hpel_iters 半像素搜索次数 ，qpel_iters 1/4像素搜索次数
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel )
 {
     const int bw = x264_pixel_size[m->i_pixel].w;
@@ -878,12 +991,14 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     ALIGNED_ARRAY_32( pixel, pix,[64*18] ); // really 17x17x2, but round up for alignment
     ALIGNED_ARRAY_16( int, costs,[4] );
 
+	//做完整像素运动搜索之后预测的运动矢量
     int bmx = m->mv[0];
     int bmy = m->mv[1];
     int bcost = m->cost;
     int odir = -1, bdir;
 
     /* halfpel diamond search */
+	//子像素搜索使用钻石法
     if( hpel_iters )
     {
         /* try the subpel component of the predicted mv */
@@ -896,15 +1011,35 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         }
 
         bcost <<= 6;
+		/* 
+         * 半像素的diamond搜索 
+         * 数字为src{n}中的n 
+         * 
+         *         X 
+         * 
+         *         0 
+         * 
+         * X   2   X   3   X 
+         * 
+         *         1 
+         * 
+         *         X 
+         */
         for( int i = hpel_iters; i > 0; i-- )
         {
             int omx = bmx, omy = bmy;
             intptr_t stride = 64; // candidates are either all hpel or all qpel, so one stride is enough
             pixel *src0, *src1, *src2, *src3;
+			//得到 omx,omy周围的半像素4个点的地址  
+            //omx和omy以1/4像素为基本单位，+2或者-2取的就是半像素点
             src0 = h->mc.get_ref( pix,    &stride, m->p_fref, m->i_stride[0], omx, omy-2, bw, bh+1, &m->weight[0] );
             src2 = h->mc.get_ref( pix+32, &stride, m->p_fref, m->i_stride[0], omx-2, omy, bw+4, bh, &m->weight[0] );
-            src1 = src0 + stride;
-            src3 = src2 + 1;
+			//src0下面的点
+            src1 = src0 + stride; //src0为中心点的上方点,src1为中心点的下方点
+            //src2右边的点
+            src3 = src2 + 1; //src2为中心点的左侧点,src3为中心点的右侧点
+            //计算cost  
+            //同时计算4个点，结果存入cost[]
             h->pixf.fpelcmp_x4[i_pixel]( m->p_fenc[0], src0, src1, src2, src3, stride, costs );
             costs[0] += p_cost_mvx[omx  ] + p_cost_mvy[omy-2];
             costs[1] += p_cost_mvx[omx  ] + p_cost_mvy[omy+2];
@@ -945,15 +1080,30 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
     }
 
     /* quarterpel diamond search */
+	/* 
+     * 1/4像素的搜索 
+     * 
+     *         X 
+     * 
+     *         0 
+     *     q 
+     * X q 2 q X   3   X 
+     *     q 
+     *         1 
+     * 
+     *         X 
+     */
     if( h->mb.i_subpel_refine != 1 )
     {
         bdir = -1;
         for( int i = qpel_iters; i > 0; i-- )
         {
+        	//判断边界
             if( bmy <= h->mb.mv_min_spel[1] || bmy >= h->mb.mv_max_spel[1] || bmx <= h->mb.mv_min_spel[0] || bmx >= h->mb.mv_max_spel[0] )
                 break;
             odir = bdir;
             int omx = bmx, omy = bmy;
+			//依然是Diamond搜索
             COST_MV_SATD( omx, omy - 1, 0 );
             COST_MV_SATD( omx, omy + 1, 1 );
             COST_MV_SATD( omx - 1, omy, 2 );
@@ -963,6 +1113,7 @@ static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_ite
         }
     }
     /* Special simplified case for subme=1 */
+	//subme=1的特殊算法？据说效果不好
     else if( bmy > h->mb.mv_min_spel[1] && bmy < h->mb.mv_max_spel[1] && bmx > h->mb.mv_min_spel[0] && bmx < h->mb.mv_max_spel[0] )
     {
         int omx = bmx, omy = bmy;

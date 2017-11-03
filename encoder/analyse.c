@@ -1515,8 +1515,25 @@ static void x264_intra_rd_refine( x264_t *h, x264_mb_analysis_t *a )
 #define REF_COST(list, ref) \
     (a->p_cost_ref[list][ref])
 
+
+/* 
+ * 16x16 帧间预测宏块分析 
+ * 
+ * +--------+--------+ 
+ * |                 | 
+ * |                 | 
+ * |                 | 
+ * +        +        + 
+ * |                 | 
+ * |                 | 
+ * |                 | 
+ * +--------+--------+ 
+ * 
+ */ 
 static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
 {
+	//运动估计相关的信息  
+	//后面的初始化工作主要是对该结构体赋值 
     x264_me_t m;
     int i_mvc;
     ALIGNED_4( int16_t mvc[8][2] );
@@ -1524,19 +1541,27 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
     int *p_halfpel_thresh = (a->b_early_terminate && h->mb.pic.i_fref[0]>1) ? &i_halfpel_thresh : NULL;
 
     /* 16x16 Search on all ref frame */
+	//设定像素分块大小 
     m.i_pixel = PIXEL_16x16;
     LOAD_FENC( &m, h->mb.pic.p_fenc, 0, 0 );
 
     a->l0.me16x16.cost = INT_MAX;
+
+	//循环搜索所有的参考帧  
+    //i_ref  
+    //mb.pic.i_fref[0]存储了参考帧的个数
     for( int i_ref = 0; i_ref < h->mb.pic.i_fref[0]; i_ref++ )
     {
         m.i_ref_cost = REF_COST( 0, i_ref );
         i_halfpel_thresh -= m.i_ref_cost;
 
         /* search with ref */
+		//加载半像素点的列表  
+        //参考列表的4个分量列表，包括yN(整点像素),yH(1/2水平内插),yV(1/2垂直内插), yHV(1/2斜对角内插)
         LOAD_HPELS( &m, h->mb.pic.p_fref[0][i_ref], 0, i_ref, 0, 0 );
         LOAD_WPELS( &m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 0, 0 );
 
+		//获得预测的运动矢量MV（通过取中值）
         x264_mb_predict_mv_16x16( h, 0, i_ref, m.mvp );
 
         if( h->mb.ref_blind_dupe == i_ref )
@@ -1547,6 +1572,7 @@ static void x264_mb_analyse_inter_p16x16( x264_t *h, x264_mb_analysis_t *a )
         else
         {
             x264_mb_predict_mv_ref16x16( h, 0, i_ref, mvc, &i_mvc );
+			//关键：运动估计（搜索参考帧）
             x264_me_search_ref( h, &m, mvc, i_mvc, p_halfpel_thresh );
         }
 
@@ -1685,6 +1711,14 @@ static void x264_mb_analyse_inter_p8x8_mixed_ref( x264_t *h, x264_mb_analysis_t 
     M32( h->mb.i_sub_partition ) = D_L0_8x8 * 0x01010101;
 }
 
+/* 
+ * 8x8帧间预测宏块分析 
+ * +--------+ 
+ * |        | 
+ * |        | 
+ * |        | 
+ * +--------+ 
+ */ 
 static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
 {
     /* Duplicate refs are rarely useful in p8x8 due to the high cost of the
@@ -1701,13 +1735,13 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
 
     i_mvc = 1;
     CP32( mvc[0], a->l0.me16x16.mv );
-
+	//处理4个8x8块
     for( int i = 0; i < 4; i++ )
     {
         x264_me_t *m = &a->l0.me8x8[i];
         int x8 = i&1;
         int y8 = i>>1;
-
+		//设定像素分块大小
         m->i_pixel = PIXEL_8x8;
         m->i_ref_cost = i_ref_cost;
 
@@ -1716,6 +1750,8 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
         LOAD_WPELS( m, h->mb.pic.p_fref_w[i_ref], 0, i_ref, 8*x8, 8*y8 );
 
         x264_mb_predict_mv( h, 0, 4*i, 2, m->mvp );
+		//调用x264_me_search_ref()  
+        //进行运动估计
         x264_me_search( h, m, mvc, i_mvc );
 
         x264_macroblock_cache_mv_ptr( h, 2*x8, 2*y8, 2, 2, 0, m->mv );
@@ -1730,7 +1766,7 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
         if( !h->param.b_cabac || (h->param.analyse.inter & X264_ANALYSE_PSUB8x8) )
             m->cost += a->i_lambda * i_sub_mb_p_cost_table[D_L0_8x8];
     }
-
+	//保存开销。4个8x8块开销累加
     a->l0.i_cost8x8 = a->l0.me8x8[0].cost + a->l0.me8x8[1].cost +
                       a->l0.me8x8[2].cost + a->l0.me8x8[3].cost;
     /* theoretically this should include 4*ref_cost,
@@ -1740,6 +1776,16 @@ static void x264_mb_analyse_inter_p8x8( x264_t *h, x264_mb_analysis_t *a )
     M32( h->mb.i_sub_partition ) = D_L0_8x8 * 0x01010101;
 }
 
+/* 
+ * 16x8 宏块划分 
+ * 
+ * +--------+--------+ 
+ * |        |        | 
+ * |        |        | 
+ * |        |        | 
+ * +--------+--------+ 
+ * 
+ */
 static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i_best_satd )
 {
     x264_me_t m;
@@ -1748,7 +1794,7 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
 
     /* XXX Needed for x264_mb_predict_mv */
     h->mb.i_partition = D_16x8;
-
+	//轮流处理上下2个块
     for( int i = 0; i < 2; i++ )
     {
         x264_me_t *l0m = &a->l0.me16x8[i];
@@ -1783,7 +1829,7 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
                 x264_me_refine_qpel_refdupe( h, &m, NULL );
             }
             else
-                x264_me_search( h, &m, mvc, 3 );
+                x264_me_search( h, &m, mvc, 3 );//运动搜索
 
             m.cost += m.i_ref_cost;
 
@@ -1802,10 +1848,24 @@ static void x264_mb_analyse_inter_p16x8( x264_t *h, x264_mb_analysis_t *a, int i
         x264_macroblock_cache_mv_ptr( h, 0, 2*i, 4, 2, 0, l0m->mv );
         x264_macroblock_cache_ref( h, 0, 2*i, 4, 2, 0, l0m->i_ref );
     }
-
+	//2个块的开销相加
     a->l0.i_cost16x8 = a->l0.me16x8[0].cost + a->l0.me16x8[1].cost;
 }
 
+/* 
+ * 8x16 宏块划分 
+ * 
+ * +--------+ 
+ * |        | 
+ * |        | 
+ * |        | 
+ * +--------+ 
+ * |        | 
+ * |        | 
+ * |        | 
+ * +--------+ 
+ * 
+ */
 static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i_best_satd )
 {
     x264_me_t m;
@@ -1814,7 +1874,7 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
 
     /* XXX Needed for x264_mb_predict_mv */
     h->mb.i_partition = D_8x16;
-
+	//轮流处理左右2个块
     for( int i = 0; i < 2; i++ )
     {
         x264_me_t *l0m = &a->l0.me8x16[i];
@@ -1867,7 +1927,7 @@ static void x264_mb_analyse_inter_p8x16( x264_t *h, x264_mb_analysis_t *a, int i
         x264_macroblock_cache_mv_ptr( h, 2*i, 0, 2, 4, 0, l0m->mv );
         x264_macroblock_cache_ref( h, 2*i, 0, 2, 4, 0, l0m->i_ref );
     }
-
+	//2个块的开销相加
     a->l0.i_cost8x16 = a->l0.me8x16[0].cost + a->l0.me8x16[1].cost;
 }
 
