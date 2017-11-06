@@ -63,15 +63,18 @@ static const uint8_t x264_pred_i4x4_neighbors[12] =
 #define IS_DIRECT(type)  ( (type) == B_DIRECT )
 enum mb_class_e
 {
+	//以I_表示的是I帧内的宏块模式，采用帧内预测
     I_4x4           = 0,
     I_8x8           = 1,
     I_16x16         = 2,
     I_PCM           = 3,
 
+	//P帧的宏块模式
     P_L0            = 4,
     P_8x8           = 5,
     P_SKIP          = 6,
 
+	//B帧的宏块模式
     B_DIRECT        = 7,
     B_L0_L0         = 8,
     B_L0_L1         = 9,
@@ -397,10 +400,14 @@ static ALWAYS_INLINE uint64_t pack32to64( uint32_t a, uint32_t b )
 #   define pack_pixel_2to4 pack16to32
 #endif
 
+//获得Intra4x4帧内模式的预测值 
 static ALWAYS_INLINE int x264_mb_predict_intra4x4_mode( x264_t *h, int idx )
 {
+	//左边4x4块的帧内预测模式
     const int ma = h->mb.cache.intra4x4_pred_mode[x264_scan8[idx] - 1];
+	//上边4x4块的帧内预测模式
     const int mb = h->mb.cache.intra4x4_pred_mode[x264_scan8[idx] - 8];
+	//取左边和上边的最小值，作为预测值
     const int m  = X264_MIN( x264_mb_pred_mode4x4_fix(ma),
                              x264_mb_pred_mode4x4_fix(mb) );
 

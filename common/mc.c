@@ -864,6 +864,7 @@ void x264_mc_init( int cpu, x264_mc_functions_t *pf, int cpu_independent )
     }
 }
 
+//°ëÏñËØÄÚ²å
 void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
 {
     const int b_interlaced = PARAM_INTERLACED;
@@ -879,11 +880,12 @@ void x264_frame_filter( x264_t *h, x264_frame_t *frame, int mb_y, int b_end )
         const int width = frame->i_width[p];
         int offs = start*stride - 8; // buffer = 3 for 6tap, aligned to 8 for simd
 
+		//°ëÏñËØÄÚ²å
         if( !b_interlaced || h->mb.b_adaptive_mbaff )
             h->mc.hpel_filter(
-                frame->filtered[p][1] + offs,
-                frame->filtered[p][2] + offs,
-                frame->filtered[p][3] + offs,
+                frame->filtered[p][1] + offs, //Ë®Æ½°ëÏñËØÄÚ²å
+                frame->filtered[p][2] + offs, //´¹Ö±°ëÏñËØÄÚ²å
+                frame->filtered[p][3] + offs, //ÖÐ¼ä°ëÏñËØÄÚ²å
                 frame->plane[p] + offs,
                 stride, width + 16, height - start,
                 h->scratch_buffer );

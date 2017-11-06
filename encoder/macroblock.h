@@ -111,10 +111,18 @@ do\
  * bit in a 4-bit input. */
 #define FOREACH_BIT(idx,start,mask) for( int idx = start, msk = mask, skip; msk && (skip = x264_ctz_4bit(msk), idx += skip, msk >>= skip+1, 1); idx++ )
 
+//编码Intra4x4  
+/* 
+ * +----+ 
+ * |    | 
+ * +----+ 
+ */
 static ALWAYS_INLINE void x264_mb_encode_i4x4( x264_t *h, int p, int idx, int i_qp, int i_mode, int b_predict )
 {
     int nz;
+	//编码帧
     pixel *p_src = &h->mb.pic.p_fenc[p][block_idx_xy_fenc[idx]];
+	//重建帧
     pixel *p_dst = &h->mb.pic.p_fdec[p][block_idx_xy_fdec[idx]];
     ALIGNED_ARRAY_64( dctcoef, dct4x4,[16] );
 
@@ -123,7 +131,7 @@ static ALWAYS_INLINE void x264_mb_encode_i4x4( x264_t *h, int p, int idx, int i_
         if( h->mb.b_lossless )
             x264_predict_lossless_4x4( h, p_dst, p, idx, i_mode );
         else
-            h->predict_4x4[i_mode]( p_dst );
+            h->predict_4x4[i_mode]( p_dst ); //帧内预测，存于p_dst
     }
 
     if( h->mb.b_lossless )
@@ -134,15 +142,19 @@ static ALWAYS_INLINE void x264_mb_encode_i4x4( x264_t *h, int p, int idx, int i_
         return;
     }
 
-    h->dctf.sub4x4_dct( dct4x4, p_src, p_dst );
-
+    h->dctf.sub4x4_dct( dct4x4, p_src, p_dst ); //求p_src与p_dst之间的残差，并且进行DCT变换
+	//量化
     nz = x264_quant_4x4( h, dct4x4, i_qp, ctx_cat_plane[DCT_LUMA_4x4][p], 1, p, idx );
     h->mb.cache.non_zero_count[x264_scan8[p*16+idx]] = nz;
     if( nz )
     {
+    	//解码并且建立重建帧（p_dst）
         h->mb.i_cbp_luma |= 1<<(idx>>2);
+		//DCT系数重新排个序-从之子扫描变换为普通扫描
         h->zigzagf.scan_4x4( h->dct.luma4x4[p*16+idx], dct4x4 );
+		//反量化
         h->quantf.dequant_4x4( dct4x4, h->dequant4_mf[p?CQM_4IC:CQM_4IY], i_qp );
+		//DCT残差反变换，并且叠加到预测数据上，形成重建帧
         h->dctf.add4x4_idct( p_dst, dct4x4 );
     }
 }

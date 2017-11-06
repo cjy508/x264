@@ -44,6 +44,7 @@
 #   include "mips/quant.h"
 #endif
 
+//量化1个元素
 #define QUANT_ONE( coef, mf, f ) \
 { \
     if( (coef) > 0 ) \
@@ -61,20 +62,27 @@ static int quant_8x8( dctcoef dct[64], udctcoef mf[64], udctcoef bias[64] )
     return !!nz;
 }
 
+//4x4量化  
+//输入输出都是dct[16] 
 static int quant_4x4( dctcoef dct[16], udctcoef mf[16], udctcoef bias[16] )
 {
     int nz = 0;
+	//循环16个元素
     for( int i = 0; i < 16; i++ )
         QUANT_ONE( dct[i], mf[i], bias[i] );
     return !!nz;
 }
 
+//处理4个4x4量化  
+//输入输出都是dct[4][16]
 static int quant_4x4x4( dctcoef dct[4][16], udctcoef mf[16], udctcoef bias[16] )
 {
     int nza = 0;
+	//处理4个
     for( int j = 0; j < 4; j++ )
     {
         int nz = 0;
+		//量化
         for( int i = 0; i < 16; i++ )
             QUANT_ONE( dct[j][i], mf[i], bias[i] );
         nza |= (!!nz)<<j;
@@ -420,14 +428,20 @@ level_run(16)
 #define INIT_TRELLIS(...)
 #endif
 
+//量化 
 void x264_quant_init( x264_t *h, int cpu, x264_quant_function_t *pf )
 {
+	//这个好像是针对8x8DCT的
     pf->quant_8x8 = quant_8x8;
+	//量化4x4=16个
     pf->quant_4x4 = quant_4x4;
+	//注意：处理4个4x4的块
     pf->quant_4x4x4 = quant_4x4x4;
+	//Intra16x16中，16个DC系数Hadamard变换后对的它们量化
     pf->quant_4x4_dc = quant_4x4_dc;
     pf->quant_2x2_dc = quant_2x2_dc;
 
+	//反量化4x4=16个
     pf->dequant_4x4 = dequant_4x4;
     pf->dequant_4x4_dc = dequant_4x4_dc;
     pf->dequant_8x8 = dequant_8x8;

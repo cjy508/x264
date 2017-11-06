@@ -49,12 +49,23 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
  ******************************* x264 libs **********************************
  *
  ****************************************************************************/
+ //通过SSD换算PSNR 
 static double x264_psnr( double sqe, double size )
 {
+	/** 
+     * 计算PSNR的过程 
+     * 
+     * MSE = SSD*1/(w*h) 
+     * PSNR= 10*log10(MAX^2/MSE) 
+     * 
+     * 其中MAX指的是图像的灰度级，对于8bit来说就是2^8-1=255 
+     */  
+    //PIXEL_MAX=255
     double mse = sqe / (PIXEL_MAX*PIXEL_MAX * size);
     if( mse <= 0.0000000001 ) /* Max 100dB */
         return 100;
 
+	//MSE转换为PSNR
     return -10.0 * log10( mse );
 }
 
@@ -115,6 +126,7 @@ static void x264_frame_dump( x264_t *h )
 }
 
 /* Fill "default" values */
+//对x264_slice_header_t进行赋值
 static void x264_slice_header_init( x264_t *h, x264_slice_header_t *sh,
                                     x264_sps_t *sps, x264_pps_t *pps,
                                     int i_idr_pic_id, int i_frame, int i_qp )
@@ -1414,6 +1426,7 @@ static void x264_set_aspect_ratio( x264_t *h, x264_param_t *param, int initial )
 /****************************************************************************
  * x264_encoder_open:
  ****************************************************************************/
+//打开编码器
 x264_t *x264_encoder_open( x264_param_t *param )
 {
     x264_t *h;
@@ -1423,6 +1436,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     CHECKED_MALLOCZERO( h, sizeof(x264_t) );
 
     /* Create a copy of param */
+	//将参数拷贝进来
     memcpy( &h->param, param, sizeof(x264_param_t) );
 
     if( param->param_free )
@@ -1438,6 +1452,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         goto fail;
     }
 
+	//检查输入参数
     if( x264_validate_parameters( h, 1 ) < 0 )
         goto fail;
 
@@ -1470,9 +1485,11 @@ x264_t *x264_encoder_open( x264_param_t *param )
 
     x264_set_aspect_ratio( h, &h->param, 1 );
 
+	//初始化SPS和PPS
     x264_sps_init( h->sps, h->param.i_sps_id, &h->param );
     x264_pps_init( h->pps, h->param.i_sps_id, &h->param, h->sps );
 
+	//检查级Level-通过宏块个数等等 
     x264_validate_levels( h, 1 );
 
     h->chroma_qp_table = i_chroma_qp_table + 12 + h->pps->i_chroma_qp_index_offset;
@@ -1480,6 +1497,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     if( x264_cqm_init( h ) < 0 )
         goto fail;
 
+	//各种赋值
     h->mb.i_mb_width = h->sps->i_mb_width;
     h->mb.i_mb_height = h->sps->i_mb_height;
     h->mb.i_mb_count = h->mb.i_mb_width * h->mb.i_mb_height;
@@ -1523,7 +1541,8 @@ x264_t *x264_encoder_open( x264_param_t *param )
     h->frames.i_input    = 0;
     h->frames.i_largest_pts = h->frames.i_second_largest_pts = -1;
     h->frames.i_poc_last_open_gop = -1;
-
+	//CHECKED_MALLOCZERO(var, size)  
+    //调用malloc()分配内存,然后调用memset()置零
     CHECKED_MALLOCZERO( h->frames.unused[0], (h->frames.i_delay + 3) * sizeof(x264_frame_t *) );
     /* Allocate room for max refs plus a few extra just in case. */
     CHECKED_MALLOCZERO( h->frames.unused[1], (h->i_thread_frames + X264_REF_MAX + 4) * sizeof(x264_frame_t *) );
@@ -1535,6 +1554,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     h->i_cpb_delay = h->i_coded_fields = h->i_disp_fields = 0;
     h->i_prev_duration = ((uint64_t)h->param.i_fps_den * h->sps->vui.i_time_scale) / ((uint64_t)h->param.i_fps_num * h->sps->vui.i_num_units_in_tick);
     h->i_disp_fields_last_frame = -1;
+	//RDO初始化
     x264_rdo_init();
 
     /* init CPU functions */
@@ -1544,27 +1564,38 @@ x264_t *x264_encoder_open( x264_param_t *param )
      * unnecessary thermal throttling and whatnot, so keep it disabled for now. */
     h->param.cpu &= ~X264_CPU_AVX512;
 #endif
+	//初始化包含汇编优化的函数  
+    //帧内预测  
     x264_predict_16x16_init( h->param.cpu, h->predict_16x16 );
     x264_predict_8x8c_init( h->param.cpu, h->predict_8x8c );
     x264_predict_8x16c_init( h->param.cpu, h->predict_8x16c );
     x264_predict_8x8_init( h->param.cpu, h->predict_8x8, &h->predict_8x8_filter );
     x264_predict_4x4_init( h->param.cpu, h->predict_4x4 );
+	//SAD等和像素计算有关的函数
     x264_pixel_init( h->param.cpu, &h->pixf );
+	//DCT 
     x264_dct_init( h->param.cpu, &h->dctf );
+	//“之”字扫描
     x264_zigzag_init( h->param.cpu, &h->zigzagf_progressive, &h->zigzagf_interlaced );
     memcpy( &h->zigzagf, PARAM_INTERLACED ? &h->zigzagf_interlaced : &h->zigzagf_progressive, sizeof(h->zigzagf) );
+	//运动补偿
     x264_mc_init( h->param.cpu, &h->mc, h->param.b_cpu_independent );
+	//量化
     x264_quant_init( h, h->param.cpu, &h->quantf );
+	//去块效应滤波
     x264_deblock_init( h->param.cpu, &h->loopf, PARAM_INTERLACED );
     x264_bitstream_init( h->param.cpu, &h->bsf );
+	//初始化CABAC或者是CAVLC 
     if( h->param.b_cabac )
         x264_cabac_init( h );
     else
         x264_stack_align( x264_cavlc_init, h );
 
+	//决定了像素比较的时候用SAD还是SATD
     mbcmp_init( h );
     chroma_dsp_init( h );
 
+	//CPU属性
     p = buf + sprintf( buf, "using cpu capabilities:" );
     for( int i = 0; x264_cpu_names[i].flags; i++ )
     {
@@ -1686,14 +1717,14 @@ x264_t *x264_encoder_open( x264_param_t *param )
     if( h->param.b_opencl && x264_opencl_lookahead_init( h ) < 0 )
         h->param.b_opencl = 0;
 #endif
-
+	//初始化lookahead
     if( x264_lookahead_init( h, i_slicetype_length ) )
         goto fail;
 
     for( int i = 0; i < h->param.i_threads; i++ )
         if( x264_macroblock_thread_allocate( h->thread[i], 0 ) < 0 )
             goto fail;
-
+	//创建码率控制 
     if( x264_ratecontrol_new( h ) < 0 )
         goto fail;
 
@@ -1720,7 +1751,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
         }
         fclose( f );
     }
-
+	//这写法......
     const char *profile = h->sps->i_profile_idc == PROFILE_BASELINE ? "Constrained Baseline" :
                           h->sps->i_profile_idc == PROFILE_MAIN ? "Main" :
                           h->sps->i_profile_idc == PROFILE_HIGH ? "High" :
@@ -1732,7 +1763,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
     if( h->sps->i_level_idc == 9 || ( h->sps->i_level_idc == 11 && h->sps->b_constraint_set3 &&
         (h->sps->i_profile_idc == PROFILE_BASELINE || h->sps->i_profile_idc == PROFILE_MAIN) ) )
         strcpy( level, "1b" );
-
+	//输出型和级
     if( h->sps->i_profile_idc < PROFILE_HIGH10 )
     {
         x264_log( h, X264_LOG_INFO, "profile %s, level %s\n",
@@ -1747,6 +1778,7 @@ x264_t *x264_encoder_open( x264_param_t *param )
 
     return h;
 fail:
+	//释放
     x264_free( h );
     return NULL;
 }
@@ -2341,9 +2373,10 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
         return;
     if( min_y < h->i_threadslice_start )
         return;
-
+	//去块效应滤波
     if( b_deblock )
         for( int y = min_y; y < mb_y; y += (1 << SLICE_MBAFF) )
+			//处理一行
             x264_frame_deblock_row( h, y );
 
     /* FIXME: Prediction requires different borders for interlaced/progressive mc,
@@ -2358,12 +2391,14 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
 
     if( h->fdec->b_kept_as_ref && (!h->param.b_sliced_threads || pass == 1) )
         x264_frame_expand_border( h, h->fdec, min_y );
+	//半像素内插 
     if( b_hpel )
     {
         int end = mb_y == h->mb.i_mb_height;
         /* Can't do hpel until the previous slice is done encoding. */
         if( h->param.analyse.i_subpel_refine )
         {
+        	//半像素内插
             x264_frame_filter( h, h->fdec, min_y, end );
             x264_frame_expand_border_filtered( h, h->fdec, min_y, end );
         }
@@ -2379,15 +2414,27 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
     if( h->i_thread_frames > 1 && h->fdec->b_kept_as_ref )
         x264_frame_cond_broadcast( h->fdec, mb_y*16 + (b_end ? 10000 : -(X264_THREAD_HEIGHT << SLICE_MBAFF)) );
 
+	//计算编码的质量
     if( b_measure_quality )
     {
         maxpix_y = X264_MIN( maxpix_y, h->param.i_height );
+		//如果需要打印输出PSNR
         if( h->param.analyse.b_psnr )
         {
+        	//实际上是计算SSD  
+            //输出的时候调用x264_psnr()换算SSD为PSNR  
+            /** 
+             * 计算PSNR的过程 
+             * 
+             * MSE = SSD*1/(w*h) 
+             * PSNR= 10*log10(MAX^2/MSE) 
+             * 
+             * 其中MAX指的是图像的灰度级，对于8bit来说就是2^8-1=255 
+             */
             for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
                 h->stat.frame.i_ssd[p] += x264_pixel_ssd_wxh( &h->pixf,
-                    h->fdec->plane[p] + minpix_y * h->fdec->i_stride[p], h->fdec->i_stride[p],
-                    h->fenc->plane[p] + minpix_y * h->fenc->i_stride[p], h->fenc->i_stride[p],
+                    h->fdec->plane[p] + minpix_y * h->fdec->i_stride[p], h->fdec->i_stride[p], //重建帧
+                    h->fenc->plane[p] + minpix_y * h->fenc->i_stride[p], h->fenc->i_stride[p], //编码帧
                     h->param.i_width, maxpix_y-minpix_y );
             if( !CHROMA444 )
             {
@@ -2402,6 +2449,7 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
             }
         }
 
+		//如果需要打印输出SSIM 
         if( h->param.analyse.b_ssim )
         {
             int ssim_cnt;
@@ -2409,18 +2457,22 @@ static void x264_fdec_filter_row( x264_t *h, int mb_y, int pass )
             /* offset by 2 pixels to avoid alignment of ssim blocks with dct blocks,
              * and overlap by 4 */
             minpix_y += b_start ? 2 : -6;
+			//计算SSIM
             h->stat.frame.f_ssim +=
                 x264_pixel_ssim_wxh( &h->pixf,
-                    h->fdec->plane[0] + 2+minpix_y*h->fdec->i_stride[0], h->fdec->i_stride[0],
-                    h->fenc->plane[0] + 2+minpix_y*h->fenc->i_stride[0], h->fenc->i_stride[0],
+                    h->fdec->plane[0] + 2+minpix_y*h->fdec->i_stride[0], h->fdec->i_stride[0], //重建帧
+                    h->fenc->plane[0] + 2+minpix_y*h->fenc->i_stride[0], h->fenc->i_stride[0], //编码帧
                     h->param.i_width-2, maxpix_y-minpix_y, h->scratch_buffer, &ssim_cnt );
             h->stat.frame.i_ssim_cnt += ssim_cnt;
         }
     }
 }
 
+//更新参考帧队列，若为非参考B帧则不更新  
+//重建帧移植参考帧列表，新建一个重建帧
 static inline int x264_reference_update( x264_t *h )
 {
+	//如果不是被参考的帧 
     if( !h->fdec->b_kept_as_ref )
     {
         if( h->i_thread_frames > 1 )
@@ -2440,17 +2492,22 @@ static inline int x264_reference_update( x264_t *h )
                 x264_frame_push_unused( h, x264_frame_shift( &h->frames.reference[j] ) );
 
     /* move frame in the buffer */
+	//重建帧加入参考帧列表 
     x264_frame_push( h->frames.reference, h->fdec );
+	//列表满了，则要移除1帧 
     if( h->frames.reference[h->sps->i_num_ref_frames] )
         x264_frame_push_unused( h, x264_frame_shift( h->frames.reference ) );
+	//重新初始化重建帧fdec
     h->fdec = x264_frame_pop_unused( h, 1 );
     if( !h->fdec )
         return -1;
     return 0;
 }
 
+//清空所有参考帧
 static inline void x264_reference_reset( x264_t *h )
 {
+	//把frames.reference[]中所有帧移动到frames.unused[] 
     while( h->frames.reference[0] )
         x264_frame_push_unused( h, x264_frame_pop( h->frames.reference ) );
     h->fdec->i_poc =
@@ -2494,11 +2551,15 @@ static inline void x264_reference_hierarchy_reset( x264_t *h )
         h->sh.i_mmco_remove_from_end = X264_MAX( ref + 2 - h->frames.i_max_dpb, 0 );
 }
 
+//创建Slice Header
 static inline void x264_slice_init( x264_t *h, int i_nal_type, int i_global_qp )
 {
     /* ------------------------ Create slice header  ----------------------- */
     if( i_nal_type == NAL_SLICE_IDR )
     {
+    	//I帧  
+  
+        //对x264_slice_header_t进行赋值
         x264_slice_header_init( h, &h->sh, h->sps, h->pps, h->i_idr_pic_id, h->i_frame_num, i_global_qp );
 
         /* alternate id */
@@ -2523,8 +2584,9 @@ static inline void x264_slice_init( x264_t *h, int i_nal_type, int i_global_qp )
     }
     else
     {
+    	//非IDR帧
         x264_slice_header_init( h, &h->sh, h->sps, h->pps, -1, h->i_frame_num, i_global_qp );
-
+		//参考帧列表
         h->sh.i_num_ref_idx_l0_active = h->i_ref[0] <= 0 ? 1 : h->i_ref[0];
         h->sh.i_num_ref_idx_l1_active = h->i_ref[1] <= 0 ? 1 : h->i_ref[1];
         if( h->sh.i_num_ref_idx_l0_active != h->pps->i_num_ref_idx_l0_default_active ||
@@ -2560,6 +2622,7 @@ static inline void x264_slice_init( x264_t *h, int i_nal_type, int i_global_qp )
         /* Nothing to do ? */
     }
 
+	//主要对mb结构体赋初值
     x264_macroblock_slice_init( h );
 }
 
@@ -3045,6 +3108,10 @@ static void x264_thread_sync_stat( x264_t *dst, x264_t *src )
         memcpy( &dst->stat, &src->stat, offsetof(x264_t, stat.frame) - offsetof(x264_t, stat) );
 }
 
+//真正的编码——编码1个图像帧  
+//注意“slice”后面有一个“s”  
+//它其中又调用了一个x264_slice_write()  
+//这一点要区分开
 static void *x264_slices_write( x264_t *h )
 {
     int i_slice_num = 0;
@@ -3053,6 +3120,7 @@ static void *x264_slices_write( x264_t *h )
     /* init stats */
     memset( &h->stat.frame, 0, sizeof(h->stat.frame) );
     h->mb.b_reencode_mb = 0;
+	//循环每一个slice（一幅图像可以由多个Slice构成）
     while( h->sh.i_first_mb + SLICE_MBAFF*h->mb.i_mb_stride <= last_thread_mb )
     {
         h->sh.i_last_mb = last_thread_mb;
@@ -3087,8 +3155,12 @@ static void *x264_slices_write( x264_t *h )
             }
         }
         h->sh.i_last_mb = X264_MIN( h->sh.i_last_mb, last_thread_mb );
+		//真正的编码——编码1个Slice  
+        //x264_stack_align()应该是平台优化过程中内存对齐的工作  
+        //实际上就是调用x264_slice_write() 
         if( x264_stack_align( x264_slice_write, h ) )
             goto fail;
+		//注意这里对i_first_mb进行了赋值
         h->sh.i_first_mb = h->sh.i_last_mb + 1;
         // if i_first_mb is not the last mb in a row then go to the next mb in MBAFF order
         if( SLICE_MBAFF && h->sh.i_first_mb % h->mb.i_mb_width )
@@ -3206,6 +3278,7 @@ int x264_encoder_invalidate_reference( x264_t *h, int64_t pts )
  *       B      5   2*4
  *       B      6   2*5
  ****************************************************************************/
+//编码一帧数据
 int     x264_encoder_encode( x264_t *h,
                              x264_nal_t **pp_nal, int *pi_nal,
                              x264_picture_t *pic_in,
@@ -3242,6 +3315,9 @@ int     x264_encoder_encode( x264_t *h,
     *pp_nal = NULL;
 
     /* ------------------- Setup new frame from picture -------------------- */
+	//步骤1  
+    //fenc存储了编码帧  
+    //获取一帧的空间fenc，用来存放待编码的帧
     if( pic_in != NULL )
     {
         if( h->lookahead->b_exit_thread )
@@ -3255,12 +3331,15 @@ int     x264_encoder_encode( x264_t *h,
         if( !fenc )
             return -1;
 
+		//外部像素数据传递到内部系统  
+        //pic_in（外部结构体x264_picture_t）到fenc（内部结构体x264_frame_t）
         if( x264_frame_copy_picture( h, fenc, pic_in ) < 0 )
             return -1;
 
+		//宽和高都确保是16的整数倍（宏块宽度的整数倍）
         if( h->param.i_width != 16 * h->mb.i_mb_width ||
             h->param.i_height != 16 * h->mb.i_mb_height )
-            x264_frame_expand_border_mod16( h, fenc );
+            x264_frame_expand_border_mod16( h, fenc ); //扩展至16整数倍
 
         fenc->i_frame = h->frames.i_input++;
 
@@ -3305,10 +3384,14 @@ int     x264_encoder_encode( x264_t *h,
         if( pic_in->prop.quant_offsets_free )
             pic_in->prop.quant_offsets_free( pic_in->prop.quant_offsets );
 
+		//降低分辨率处理（原来的一半），线性内插  
+        //注意这里并不是6抽头滤波器的半像素内插
         if( h->frames.b_have_lowres )
             x264_frame_init_lowres( h, fenc );
 
         /* 2: Place the frame into the queue for its slice type decision */
+		//步骤2  
+        //fenc放入lookahead.next.list[]队列，等待确定帧类型 
         x264_lookahead_put_frame( h, fenc );
 
         if( h->frames.i_input <= h->frames.i_delay + 1 - h->i_thread_frames )
@@ -3320,6 +3403,7 @@ int     x264_encoder_encode( x264_t *h,
     }
     else
     {
+    	//输入数据为空的时候（Flush Encoder？），不需要lookahead 
         /* signal kills for lookahead thread */
         x264_pthread_mutex_lock( &h->lookahead->ifbuf.mutex );
         h->lookahead->b_exit_thread = 1;
@@ -3329,6 +3413,8 @@ int     x264_encoder_encode( x264_t *h,
 
     h->i_frame++;
     /* 3: The picture is analyzed in the lookahead */
+	// 步骤3  
+    //通过lookahead分析帧类型
     if( !h->frames.current[0] )
         x264_lookahead_get_frames( h );
 
@@ -3337,6 +3423,7 @@ int     x264_encoder_encode( x264_t *h,
 
     /* ------------------- Get frame to be encoded ------------------------- */
     /* 4: get picture to encode */
+	//从frames.current[]队列取出1帧[0]用于编码
     h->fenc = x264_frame_shift( h->frames.current );
 
     /* If applicable, wait for previous frame reconstruction to finish */
@@ -3363,6 +3450,8 @@ int     x264_encoder_encode( x264_t *h,
     x264_ratecontrol_zone_init( h );
 
     // ok to call this before encoding any frames, since the initial values of fdec have b_kept_as_ref=0
+    //更新参考帧队列frames.reference[].若为B帧则不更新  
+    //重建帧fdec移植参考帧列表，新建一个fdec 
     if( x264_reference_update( h ) )
         return -1;
     h->fdec->i_lines_completed = -1;
@@ -3401,15 +3490,22 @@ int     x264_encoder_encode( x264_t *h,
     /* 5: Init data dependent of frame type */
     if( h->fenc->i_type == X264_TYPE_IDR )
     {
+    	//I与IDR区别  
+        //注意IDR会导致参考帧列清空，而I不会  
+        //I图像之后的图像可以引用I图像之间的图像做运动参考
         /* reset ref pictures */
         i_nal_type    = NAL_SLICE_IDR;
         i_nal_ref_idc = NAL_PRIORITY_HIGHEST;
         h->sh.i_type = SLICE_TYPE_I;
+		//若是IDR帧，则清空所有参考帧 
         x264_reference_reset( h );
         h->frames.i_poc_last_open_gop = -1;
     }
     else if( h->fenc->i_type == X264_TYPE_I )
     {
+    	//I与IDR区别  
+        //注意IDR会导致参考帧列清空，而I不会  
+        //I图像之后的图像可以引用I图像之间的图像做运动参考
         i_nal_type    = NAL_SLICE;
         i_nal_ref_idc = NAL_PRIORITY_HIGH; /* Not completely true but for now it is (as all I/P are kept as ref)*/
         h->sh.i_type = SLICE_TYPE_I;
@@ -3427,6 +3523,7 @@ int     x264_encoder_encode( x264_t *h,
     }
     else if( h->fenc->i_type == X264_TYPE_BREF )
     {
+    	//可以作为参考帧的B帧，这是个特色 
         i_nal_type    = NAL_SLICE;
         i_nal_ref_idc = h->param.i_bframe_pyramid == X264_B_PYRAMID_STRICT ? NAL_PRIORITY_LOW : NAL_PRIORITY_HIGH;
         h->sh.i_type = SLICE_TYPE_B;
@@ -3434,11 +3531,13 @@ int     x264_encoder_encode( x264_t *h,
     }
     else    /* B frame */
     {
+    	//最普通
         i_nal_type    = NAL_SLICE;
         i_nal_ref_idc = NAL_PRIORITY_DISPOSABLE;
         h->sh.i_type = SLICE_TYPE_B;
     }
 
+	//重建帧与编码帧的赋值... 
     h->fdec->i_type = h->fenc->i_type;
     h->fdec->i_frame = h->fenc->i_frame;
     h->fenc->b_kept_as_ref =
@@ -3465,10 +3564,12 @@ int     x264_encoder_encode( x264_t *h,
 
     /* ------------------- Init                ----------------------------- */
     /* build ref list 0/1 */
+	//创建参考帧列表list0和list1 
     x264_reference_build_list( h, h->fdec->i_poc );
 
     /* ---------------------- Write the bitstream -------------------------- */
     /* Init bitstream context */
+	//用于输出
     if( h->param.b_sliced_threads )
     {
         for( int i = 0; i < h->param.i_threads; i++ )
@@ -3545,6 +3646,7 @@ int     x264_encoder_encode( x264_t *h,
 
     if( h->fenc->b_keyframe )
     {
+    	//每个关键帧前面重复加上SPS和PPS 
         /* Write SPS and PPS */
         if( h->param.b_repeat_headers )
         {
@@ -3581,6 +3683,7 @@ int     x264_encoder_encode( x264_t *h,
     }
 
     /* write extra sei */
+	//下面很大一段代码用于写入SEI（一部分是为了适配其他的解码器）==========================================
     for( int i = 0; i < h->fenc->extra_sei.num_payloads; i++ )
     {
         x264_nal_start( h, NAL_SEI, NAL_PRIORITY_DISPOSABLE );
@@ -3603,6 +3706,7 @@ int     x264_encoder_encode( x264_t *h,
         h->fenc->extra_sei.sei_free = NULL;
     }
 
+	//特殊的SEI信息（Avid等解码器需要）
     if( h->fenc->b_keyframe )
     {
         /* Avid's decoder strictly wants two SEIs for AVC-Intra so we can't insert the x264 SEI */
@@ -3702,9 +3806,11 @@ int     x264_encoder_encode( x264_t *h,
         h->out.nal[h->out.i_nal-1].i_padding = total_len - h->out.nal[h->out.i_nal-1].i_payload - SEI_OVERHEAD;
         overhead += h->out.nal[h->out.i_nal-1].i_payload + h->out.nal[h->out.i_nal-1].i_padding + SEI_OVERHEAD;
     }
+	//写入SEI代码结束========================================================
 
     /* Init the rate control */
     /* FIXME: Include slice header bit cost. */
+	//码率控制单元初始化
     x264_ratecontrol_start( h, h->fenc->i_qpplus1, overhead*8 );
     i_global_qp = x264_ratecontrol_qp( h );
 
@@ -3721,9 +3827,11 @@ int     x264_encoder_encode( x264_t *h,
         h->fdec->i_poc_l0ref0 = h->fref[0][0]->i_poc;
 
     /* ------------------------ Create slice header  ----------------------- */
+	//创建Slice Header
     x264_slice_init( h, i_nal_type, i_global_qp );
 
     /*------------------------- Weights -------------------------------------*/
+	//加权预测
     if( h->sh.i_type == SLICE_TYPE_B )
         x264_macroblock_bipred_init( h );
 
@@ -3746,12 +3854,19 @@ int     x264_encoder_encode( x264_t *h,
             return -1;
     }
     else
+		//真正的编码——编码1个图像帧（注意这里“slices”后面有“s”） 
         if( (intptr_t)x264_slices_write( h ) )
             return -1;
 
+	//结束的时候做一些处理，记录一些统计信息  
+    //输出NALU  
+    //输出重建帧
     return x264_encoder_frame_end( thread_oldest, thread_current, pp_nal, pi_nal, pic_out );
 }
 
+//结束的时候做一些处理，记录一些统计信息  
+//pp_nal：输出的NALU  
+//pic_out：输出的重建帧 
 static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
                                    x264_nal_t **pp_nal, int *pi_nal,
                                    x264_picture_t *pic_out )
@@ -3791,11 +3906,15 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
         h->out.nal[idx] = nal_tmp;
     }
 
+	//封装一帧数据对应的NALU.  
+    //例如给NALU添加起始码0x00000001 
     int frame_size = x264_encoder_encapsulate_nals( h, 0 );
     if( frame_size < 0 )
         return -1;
 
     /* Set output picture properties */
+	//封装一帧数据对应的NALU.  
+    //例如给NALU添加起始码0x00000001 
     pic_out->i_type = h->fenc->i_type;
 
     pic_out->b_keyframe = h->fenc->b_keyframe;
@@ -3814,12 +3933,14 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     pic_out->img.i_csp |= X264_CSP_HIGH_DEPTH;
 #endif
     pic_out->img.i_plane = h->fdec->i_plane;
+	//图像数据
     for( int i = 0; i < pic_out->img.i_plane; i++ )
     {
         pic_out->img.i_stride[i] = h->fdec->i_stride[i] * sizeof(pixel);
         pic_out->img.plane[i] = (uint8_t*)h->fdec->plane[i];
     }
 
+	//回收用过的编码帧fenc 
     x264_frame_push_unused( thread_current, h->fenc );
 
     /* ---------------------- Update encoder state ------------------------- */
@@ -3897,10 +4018,14 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     x264_thread_sync_stat( h, h->thread[0] );
 
     /* Slice stat */
+	//stat中存储了统计信息  
+    //帧数+1 （根据类型）
     h->stat.i_frame_count[h->sh.i_type]++;
+	//帧大小
     h->stat.i_frame_size[h->sh.i_type] += frame_size;
     h->stat.f_frame_qp[h->sh.i_type] += h->fdec->f_qp_avg_aq;
 
+	//统计MB个数，把不同类型的累加起来 
     for( int i = 0; i < X264_MBTYPE_MAX; i++ )
         h->stat.i_mb_count[h->sh.i_type][i] += h->stat.frame.i_mb_count[i];
     for( int i = 0; i < X264_PARTTYPE_MAX; i++ )
@@ -3942,8 +4067,10 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
     psz_message[0] = '\0';
     double dur = h->fenc->f_duration;
     h->stat.f_frame_duration[h->sh.i_type] += dur;
+	//需要计算PSNR 
     if( h->param.analyse.b_psnr )
     {
+    	//SSD（Sum of Squared Difference）即差值的平方和 
         int64_t ssd[3] =
         {
             h->stat.frame.i_ssd[0],
@@ -3952,11 +4079,15 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
         };
         int luma_size = h->param.i_width * h->param.i_height;
         int chroma_size = CHROMA_SIZE( luma_size );
+		//SSD是已经在“滤波”环节计算过的  
+        //SSD简单换算成PSNR，调用x264_psnr() 
         pic_out->prop.f_psnr[0] = x264_psnr( ssd[0], luma_size );
         pic_out->prop.f_psnr[1] = x264_psnr( ssd[1], chroma_size );
         pic_out->prop.f_psnr[2] = x264_psnr( ssd[2], chroma_size );
+		//平均值
         pic_out->prop.f_psnr_avg = x264_psnr( ssd[0] + ssd[1] + ssd[2], luma_size + chroma_size*2 );
 
+		//mean系列的需要累加
         h->stat.f_ssd_global[h->sh.i_type]   += dur * (ssd[0] + ssd[1] + ssd[2]);
         h->stat.f_psnr_average[h->sh.i_type] += dur * pic_out->prop.f_psnr_avg;
         h->stat.f_psnr_mean_y[h->sh.i_type]  += dur * pic_out->prop.f_psnr[0];
@@ -3968,9 +4099,12 @@ static int x264_encoder_frame_end( x264_t *h, x264_t *thread_current,
                                                                     pic_out->prop.f_psnr[2] );
     }
 
+	//需要计算SSIM
     if( h->param.analyse.b_ssim )
     {
+    	//SSIM是已经在“滤波”环节计算过的
         pic_out->prop.f_ssim = h->stat.frame.f_ssim / h->stat.frame.i_ssim_cnt;
+		//mean系列的需要累加
         h->stat.f_ssim_mean_y[h->sh.i_type] += pic_out->prop.f_ssim * dur;
         int msg_len = strlen(psz_message);
         snprintf( psz_message + msg_len, 80 - msg_len, " SSIM Y:%.5f", pic_out->prop.f_ssim );
@@ -4080,7 +4214,40 @@ void    x264_encoder_close  ( x264_t *h )
     }
     h->i_frame++;
 
-    /* Slices used and PSNR */
+	/* 
+     * x264控制台输出示例 
+     * 
+     * x264 [info]: using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX 
+     * x264 [info]: profile High, level 2.1 
+     * x264 [info]: frame I:2     Avg QP:20.51  size: 20184  PSNR Mean Y:45.32 U:47.54 V:47.62 Avg:45.94 Global:45.52 
+     * x264 [info]: frame P:33    Avg QP:23.08  size:  3230  PSNR Mean Y:43.23 U:47.06 V:46.87 Avg:44.15 Global:44.00 
+     * x264 [info]: frame B:65    Avg QP:27.87  size:   352  PSNR Mean Y:42.76 U:47.21 V:47.05 Avg:43.79 Global:43.65 
+     * x264 [info]: consecutive B-frames:  3.0% 10.0% 63.0% 24.0% 
+     * x264 [info]: mb I  I16..4: 15.3% 37.5% 47.3% 
+     * x264 [info]: mb P  I16..4:  0.6%  0.4%  0.2%  P16..4: 34.6% 21.2% 12.7%  0.0%  0.0%    skip:30.4% 
+     * x264 [info]: mb B  I16..4:  0.0%  0.0%  0.0%  B16..8: 21.2%  4.1%  0.7%  direct: 0.8%  skip:73.1%  L0:28.7% L1:53.0% BI:18.3% 
+     * x264 [info]: 8x8 transform intra:37.1% inter:51.0% 
+     * x264 [info]: coded y,uvDC,uvAC intra: 74.1% 83.3% 58.9% inter: 10.4% 6.6% 0.4% 
+     * x264 [info]: i16 v,h,dc,p: 21% 25%  7% 48% 
+     * x264 [info]: i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 25% 23% 13%  6%  5%  5%  6%  8% 10% 
+     * x264 [info]: i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 22% 20%  9%  7%  7%  8%  8%  7% 12% 
+     * x264 [info]: i8c dc,h,v,p: 43% 20% 27% 10% 
+     * x264 [info]: Weighted P-Frames: Y:0.0% UV:0.0% 
+     * x264 [info]: ref P L0: 62.5% 19.7% 13.8%  4.0% 
+     * x264 [info]: ref B L0: 88.8%  9.4%  1.9% 
+     * x264 [info]: ref B L1: 92.6%  7.4% 
+     * x264 [info]: PSNR Mean Y:42.967 U:47.163 V:47.000 Avg:43.950 Global:43.796 kb/s:339.67 
+     * 
+     * encoded 100 frames, 178.25 fps, 339.67 kb/s 
+     * 
+     */  
+  
+    /* Slices used and PSNR */  
+    /* 示例 
+     * x264 [info]: frame I:2     Avg QP:20.51  size: 20184  PSNR Mean Y:45.32 U:47.54 V:47.62 Avg:45.94 Global:45.52 
+     * x264 [info]: frame P:33    Avg QP:23.08  size:  3230  PSNR Mean Y:43.23 U:47.06 V:46.87 Avg:44.15 Global:44.00 
+     * x264 [info]: frame B:65    Avg QP:27.87  size:   352  PSNR Mean Y:42.76 U:47.21 V:47.05 Avg:43.79 Global:43.65 
+     */
     for( int i = 0; i < 3; i++ )
     {
         static const uint8_t slice_order[] = { SLICE_TYPE_I, SLICE_TYPE_P, SLICE_TYPE_B };
@@ -4092,6 +4259,8 @@ void    x264_encoder_close  ( x264_t *h )
             double dur =  h->stat.f_frame_duration[i_slice];
             if( h->param.analyse.b_psnr )
             {
+            	//输出统计信息-包含PSNR  
+                //注意PSNR都是通过SSD换算过来的，换算方法就是调用x264_psnr()方法
                 x264_log( h, X264_LOG_INFO,
                           "frame %c:%-5d Avg QP:%5.2f  size:%6.0f  PSNR Mean Y:%5.2f U:%5.2f V:%5.2f Avg:%5.2f Global:%5.2f\n",
                           slice_type_to_char[i_slice],
@@ -4103,7 +4272,8 @@ void    x264_encoder_close  ( x264_t *h )
                           x264_psnr( h->stat.f_ssd_global[i_slice], dur * i_yuv_size ) );
             }
             else
-            {
+            {	
+            	//输出统计信息-不包含PSNR
                 x264_log( h, X264_LOG_INFO,
                           "frame %c:%-5d Avg QP:%5.2f  size:%6.0f\n",
                           slice_type_to_char[i_slice],
@@ -4113,6 +4283,10 @@ void    x264_encoder_close  ( x264_t *h )
             }
         }
     }
+	/* 示例 
+     * x264 [info]: consecutive B-frames:  3.0% 10.0% 63.0% 24.0% 
+     * 
+     */
     if( h->param.i_bframe && h->stat.i_frame_count[SLICE_TYPE_B] )
     {
         char *p = buf;
@@ -4133,9 +4307,16 @@ void    x264_encoder_close  ( x264_t *h )
         }
 
     /* MB types used */
+	/* 示例 
+     * x264 [info]: mb I  I16..4: 15.3% 37.5% 47.3% 
+     * x264 [info]: mb P  I16..4:  0.6%  0.4%  0.2%  P16..4: 34.6% 21.2% 12.7%  0.0%  0.0%    skip:30.4% 
+     * x264 [info]: mb B  I16..4:  0.0%  0.0%  0.0%  B16..8: 21.2%  4.1%  0.7%  direct: 0.8%  skip:73.1%  L0:28.7% L1:53.0% BI:18.3% 
+     */
     if( h->stat.i_frame_count[SLICE_TYPE_I] > 0 )
     {
         int64_t *i_mb_count = h->stat.i_mb_count[SLICE_TYPE_I];
+		//Intra宏块信息-存于buf  
+        //从左到右3个信息，依次为I16x16,I8x8,I4x4 
         double i_count = (double)h->stat.i_frame_count[SLICE_TYPE_I] * h->mb.i_mb_count / 100.0;
         x264_print_intra( i_mb_count, i_count, b_print_pcm, buf );
         x264_log( h, X264_LOG_INFO, "mb I  %s\n", buf );
@@ -4145,7 +4326,11 @@ void    x264_encoder_close  ( x264_t *h )
         int64_t *i_mb_count = h->stat.i_mb_count[SLICE_TYPE_P];
         double i_count = (double)h->stat.i_frame_count[SLICE_TYPE_P] * h->mb.i_mb_count / 100.0;
         int64_t *i_mb_size = i_mb_count_size[SLICE_TYPE_P];
+		//Intra宏块信息-存于buf
         x264_print_intra( i_mb_count, i_count, b_print_pcm, buf );
+		//Intra宏块信息-放在最前面  
+        //后面添加P宏块信息  
+        //从左到右6个信息，依次为P16x16, P16x8+P8x16, P8x8, P8x4+P4x8, P4x4, PSKIP
         x264_log( h, X264_LOG_INFO,
                   "mb P  %s  P16..4: %4.1f%% %4.1f%% %4.1f%% %4.1f%% %4.1f%%    skip:%4.1f%%\n",
                   buf,
@@ -4163,6 +4348,7 @@ void    x264_encoder_close  ( x264_t *h )
         double i_mb_list_count;
         int64_t *i_mb_size = i_mb_count_size[SLICE_TYPE_B];
         int64_t list_count[3] = {0}; /* 0 == L0, 1 == L1, 2 == BI */
+		//Intra宏块信息
         x264_print_intra( i_mb_count, i_count, b_print_pcm, buf );
         for( int i = 0; i < X264_PARTTYPE_MAX; i++ )
             for( int j = 0; j < 2; j++ )
@@ -4177,6 +4363,14 @@ void    x264_encoder_close  ( x264_t *h )
         list_count[2] += h->stat.i_mb_partition[SLICE_TYPE_B][D_BI_8x8];
         i_mb_count[B_DIRECT] += (h->stat.i_mb_partition[SLICE_TYPE_B][D_DIRECT_8x8]+2)/4;
         i_mb_list_count = (list_count[0] + list_count[1] + list_count[2]) / 100.0;
+		//Intra宏块信息-放在最前面  
+        //后面添加B宏块信息  
+        //从左到右5个信息，依次为B16x16, B16x8+B8x16, B8x8, BDIRECT, BSKIP  
+        //  
+        //SKIP和DIRECT区别  
+        //P_SKIP的CBP为0,无像素残差，无运动矢量残  
+        //B_SKIP宏块的模式为B_DIRECT且CBP为0,无像素残差，无运动矢量残  
+        //B_DIRECT的CBP不为0,有像素残差，无运动矢量残
         sprintf( buf + strlen(buf), "  B16..8: %4.1f%% %4.1f%% %4.1f%%  direct:%4.1f%%  skip:%4.1f%%",
                  i_mb_size[PIXEL_16x16] / (i_count*4),
                  (i_mb_size[PIXEL_16x8] + i_mb_size[PIXEL_8x16]) / (i_count*4),
@@ -4191,6 +4385,10 @@ void    x264_encoder_close  ( x264_t *h )
         x264_log( h, X264_LOG_INFO, "mb B  %s\n", buf );
     }
 
+	//码率控制信息  
+    /* 示例 
+     * x264 [info]: final ratefactor: 20.01 
+     */
     x264_ratecontrol_summary( h );
 
     if( h->stat.i_frame_count[SLICE_TYPE_I] + h->stat.i_frame_count[SLICE_TYPE_P] + h->stat.i_frame_count[SLICE_TYPE_B] > 0 )
@@ -4213,6 +4411,7 @@ void    x264_encoder_close  ( x264_t *h )
                                 h->stat.f_frame_duration[SLICE_TYPE_B];
         float f_bitrate = SUM3(h->stat.i_frame_size) / duration / 125;
 
+		//隔行
         if( PARAM_INTERLACED )
         {
             char *fieldstats = buf;
@@ -4225,6 +4424,7 @@ void    x264_encoder_close  ( x264_t *h )
                       h->stat.i_mb_field[0] * 100.0 / i_intra, buf );
         }
 
+		//8x8DCT信息
         if( h->pps->b_transform_8x8_mode )
         {
             buf[0] = 0;
@@ -4249,12 +4449,29 @@ void    x264_encoder_close  ( x264_t *h )
                      h->stat.i_mb_cbp[1] * 100.0 / ((i_mb_count - i_all_intra)*4),
                      h->stat.i_mb_cbp[3] * 100.0 / ((i_mb_count - i_all_intra)*csize),
                      h->stat.i_mb_cbp[5] * 100.0 / ((i_mb_count - i_all_intra)*csize) );
+		/* 
+         * 示例 
+         * x264 [info]: coded y,uvDC,uvAC intra: 74.1% 83.3% 58.9% inter: 10.4% 6.6% 0.4% 
+         */ 
         x264_log( h, X264_LOG_INFO, "coded y,%s,%s intra: %.1f%% %.1f%% %.1f%%%s\n",
                   CHROMA444?"u":"uvDC", CHROMA444?"v":"uvAC",
                   h->stat.i_mb_cbp[0] * 100.0 / (i_all_intra*4),
                   h->stat.i_mb_cbp[2] * 100.0 / (i_all_intra*csize),
                   h->stat.i_mb_cbp[4] * 100.0 / (i_all_intra*csize), buf );
 
+		/* 
+         * 帧内预测信息 
+         * 从上到下分别为I16x16,I8x8,I4x4 
+         * 从左到右顺序为Vertical, Horizontal, DC, Plane .... 
+         * 
+         * 示例 
+         * 
+         * x264 [info]: i16 v,h,dc,p: 21% 25%  7% 48% 
+         * x264 [info]: i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 25% 23% 13%  6%  5%  5%  6%  8% 10% 
+         * x264 [info]: i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 22% 20%  9%  7%  7%  8%  8%  7% 12% 
+         * x264 [info]: i8c dc,h,v,p: 43% 20% 27% 10% 
+         * 
+         */
         int64_t fixed_pred_modes[4][9] = {{0}};
         int64_t sum_pred_modes[4] = {0};
         for( int i = 0; i <= I_PRED_16x16_DC_128; i++ )
@@ -4304,6 +4521,17 @@ void    x264_encoder_close  ( x264_t *h )
                       h->stat.i_wpred[0] * 100.0 / h->stat.i_frame_count[SLICE_TYPE_P],
                       h->stat.i_wpred[1] * 100.0 / h->stat.i_frame_count[SLICE_TYPE_P] );
 
+		/* 
+         * 参考帧信息 
+         * 从左到右依次为不同序号的参考帧 
+         * 
+         * 示例 
+         * 
+         * x264 [info]: ref P L0: 62.5% 19.7% 13.8%  4.0% 
+         * x264 [info]: ref B L0: 88.8%  9.4%  1.9% 
+         * x264 [info]: ref B L1: 92.6%  7.4% 
+         * 
+         */
         for( int i_list = 0; i_list < 2; i_list++ )
             for( int i_slice = 0; i_slice < 2; i_slice++ )
             {
@@ -4328,6 +4556,12 @@ void    x264_encoder_close  ( x264_t *h )
             float ssim = SUM3( h->stat.f_ssim_mean_y ) / duration;
             x264_log( h, X264_LOG_INFO, "SSIM Mean Y:%.7f (%6.3fdb)\n", ssim, x264_ssim( ssim ) );
         }
+		/* 
+         * 示例 
+         * 
+         * x264 [info]: PSNR Mean Y:42.967 U:47.163 V:47.000 Avg:43.950 Global:43.796 kb/s:339.67 
+         * 
+         */
         if( h->param.analyse.b_psnr )
         {
             x264_log( h, X264_LOG_INFO,
@@ -4343,6 +4577,7 @@ void    x264_encoder_close  ( x264_t *h )
             x264_log( h, X264_LOG_INFO, "kb/s:%.2f\n", f_bitrate );
     }
 
+	//各种释放
     /* rc */
     x264_ratecontrol_delete( h );
 

@@ -105,11 +105,12 @@ const uint32_t x264_dct8_weight2_tab[64] = {
 };
 #undef W
 
-
+//Hadamard变换
 static void dct4x4dc( dctcoef d[16] )
 {
     dctcoef tmp[16];
 
+	//蝶形算法：横向的4个像素
     for( int i = 0; i < 4; i++ )
     {
         int s01 = d[i*4+0] + d[i*4+1];
@@ -123,6 +124,7 @@ static void dct4x4dc( dctcoef d[16] )
         tmp[3*4+i] = d01 + d23;
     }
 
+	//蝶形算法：纵向
     for( int i = 0; i < 4; i++ )
     {
         int s01 = tmp[i*4+0] + tmp[i*4+1];
@@ -204,25 +206,46 @@ static void dct2x4dc( dctcoef dct[8], dctcoef dct4x4[8][16] )
     dct4x4[7][0] = 0;
 }
 
+/* 
+ * 求残差用 
+ * 注意求的是一个“方块”形像素 
+ * 
+ * 参数的含义如下： 
+ * diff：输出的残差数据 
+ * i_size：方块的大小 
+ * pix1：输入数据1 
+ * i_pix1：输入数据1一行像素大小（stride） 
+ * pix2：输入数据2 
+ * i_pix2：输入数据2一行像素大小（stride） 
+ * 
+ */
 static inline void pixel_sub_wxh( dctcoef *diff, int i_size,
                                   pixel *pix1, int i_pix1, pixel *pix2, int i_pix2 )
 {
     for( int y = 0; y < i_size; y++ )
     {
         for( int x = 0; x < i_size; x++ )
-            diff[x + y*i_size] = pix1[x] - pix2[x];
-        pix1 += i_pix1;
+            diff[x + y*i_size] = pix1[x] - pix2[x]; //求残差
+        pix1 += i_pix1; //前进到下一行
         pix2 += i_pix2;
     }
 }
 
+//4x4DCT变换  
+//注意首先获取pix1和pix2两块数据的残差，然后再进行变换  
+//返回dct[16]
 static void sub4x4_dct( dctcoef dct[16], pixel *pix1, pixel *pix2 )
 {
     dctcoef d[16];
     dctcoef tmp[16];
 
+	//获取残差数据，存入d[16]  
+    //pix1一般为编码帧（enc）  
+    //pix2一般为重建帧（dec）
     pixel_sub_wxh( d, 4, pix1, FENC_STRIDE, pix2, FDEC_STRIDE );
 
+	//处理残差d[16]  
+    //蝶形算法：横向4个像素
     for( int i = 0; i < 4; i++ )
     {
         int s03 = d[i*4+0] + d[i*4+3];
@@ -236,6 +259,7 @@ static void sub4x4_dct( dctcoef dct[16], pixel *pix1, pixel *pix2 )
         tmp[3*4+i] =   d03 - 2*d12;
     }
 
+	//蝶形算法：纵向 
     for( int i = 0; i < 4; i++ )
     {
         int s03 = tmp[i*4+0] + tmp[i*4+3];
@@ -250,16 +274,44 @@ static void sub4x4_dct( dctcoef dct[16], pixel *pix1, pixel *pix2 )
     }
 }
 
+//8x8块：分解成4个4x4DCT变换，调用4次sub4x4_dct()  
+//返回dct[4][16] 
 static void sub8x8_dct( dctcoef dct[4][16], pixel *pix1, pixel *pix2 )
 {
+	 /* 
+     * 8x8 宏块被划分为4个4x4子块 
+     * 
+     * +---+---+ 
+     * | 0 | 1 | 
+     * +---+---+ 
+     * | 2 | 3 | 
+     * +---+---+ 
+     * 
+     */
     sub4x4_dct( dct[0], &pix1[0], &pix2[0] );
     sub4x4_dct( dct[1], &pix1[4], &pix2[4] );
     sub4x4_dct( dct[2], &pix1[4*FENC_STRIDE+0], &pix2[4*FDEC_STRIDE+0] );
     sub4x4_dct( dct[3], &pix1[4*FENC_STRIDE+4], &pix2[4*FDEC_STRIDE+4] );
 }
 
+//16x16块：分解成4个8x8的块做DCT变换，调用4次sub8x8_dct()  
+//返回dct[16][16] 
 static void sub16x16_dct( dctcoef dct[16][16], pixel *pix1, pixel *pix2 )
 {
+	/* 
+     * 16x16 宏块被划分为4个8x8子块 
+     * 
+     * +--------+--------+ 
+     * |        |        | 
+     * |   0    |   1    | 
+     * |        |        | 
+     * +--------+--------+ 
+     * |        |        | 
+     * |   2    |   3    | 
+     * |        |        | 
+     * +--------+--------+ 
+     * 
+     */
     sub8x8_dct( &dct[ 0], &pix1[0], &pix2[0] );
     sub8x8_dct( &dct[ 4], &pix1[8], &pix2[8] );
     sub8x8_dct( &dct[ 8], &pix1[8*FENC_STRIDE+0], &pix2[8*FDEC_STRIDE+0] );
@@ -331,6 +383,7 @@ static void sub8x16_dct_dc( dctcoef dct[8], pixel *pix1, pixel *pix2 )
     dct[7] = a6 + a7;
 }
 
+//4x4DCT反变换（“add”代表叠加到已有的像素上）
 static void add4x4_idct( pixel *p_dst, dctcoef dct[16] )
 {
     dctcoef d[16];
@@ -538,32 +591,39 @@ static void add16x16_idct_dc( pixel *p_dst, dctcoef dct[16] )
  ****************************************************************************/
 void x264_dct_init( int cpu, x264_dct_function_t *dctf )
 {
+	//C语言版本  
+    //4x4DCT变换 
     dctf->sub4x4_dct    = sub4x4_dct;
     dctf->add4x4_idct   = add4x4_idct;
 
+	//8x8块：分解成4个4x4DCT变换，调用4次sub4x4_dct() 
     dctf->sub8x8_dct    = sub8x8_dct;
     dctf->sub8x8_dct_dc = sub8x8_dct_dc;
     dctf->add8x8_idct   = add8x8_idct;
     dctf->add8x8_idct_dc = add8x8_idct_dc;
 
     dctf->sub8x16_dct_dc = sub8x16_dct_dc;
-
+	//16x16块：分解成4个8x8块，调用4次sub8x8_dct()  
+    //实际上每个sub8x8_dct()又分解成4个4x4DCT变换，调用4次sub4x4_dct()
     dctf->sub16x16_dct  = sub16x16_dct;
     dctf->add16x16_idct = add16x16_idct;
     dctf->add16x16_idct_dc = add16x16_idct_dc;
 
+	//8x8DCT，注意：后缀是_dct8
     dctf->sub8x8_dct8   = sub8x8_dct8;
     dctf->add8x8_idct8  = add8x8_idct8;
 
     dctf->sub16x16_dct8  = sub16x16_dct8;
     dctf->add16x16_idct8 = add16x16_idct8;
 
+	//Hadamard变换
     dctf->dct4x4dc  = dct4x4dc;
     dctf->idct4x4dc = idct4x4dc;
 
     dctf->dct2x4dc = dct2x4dc;
 
 #if HIGH_BIT_DEPTH
+	//MMX版本 
 #if HAVE_MMX
     if( cpu&X264_CPU_MMX )
     {

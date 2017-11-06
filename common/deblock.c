@@ -76,8 +76,31 @@ static const int8_t i_tc0_table[52+12*3][4] =
 #define tc0_table(x)   i_tc0_table[(x)+24]
 
 /* From ffmpeg */
+//去块效应滤波-普通滤波，Bs为1,2,3  
+//从FFmpeg复制过来的？ 
 static ALWAYS_INLINE void deblock_edge_luma_c( pixel *pix, intptr_t xstride, int alpha, int beta, int8_t tc0 )
 {
+	//p和q  
+    //如果xstride=stride，ystride=1  
+    //就是处理纵向的6个像素  
+    //对应的是方块的横向边界的滤波，即如下所示：  
+    //        p2  
+    //        p1  
+    //        p0  
+    //=====图像边界=====  
+    //        q0  
+    //        q1  
+    //        q2  
+    //  
+    //如果xstride=1，ystride=stride  
+    //就是处理纵向的6个像素  
+    //对应的是方块的横向边界的滤波，即如下所示：  
+    //          ||  
+    // p2 p1 p0 || q0 q1 q2  
+    //          ||  
+    //          边界  
+  
+    //注意：这里乘的是xstride 
     int p2 = pix[-3*xstride];
     int p1 = pix[-2*xstride];
     int p0 = pix[-1*xstride];
@@ -85,16 +108,22 @@ static ALWAYS_INLINE void deblock_edge_luma_c( pixel *pix, intptr_t xstride, int
     int q1 = pix[ 1*xstride];
     int q2 = pix[ 2*xstride];
 
+	//计算方法参考相关的标准  
+    //alpha和beta是用于检查图像内容的2个参数  
+    //只有满足if()里面3个取值条件的时候（只涉及边界旁边的4个点），才会滤波
     if( abs( p0 - q0 ) < alpha && abs( p1 - p0 ) < beta && abs( q1 - q0 ) < beta )
     {
         int tc = tc0;
         int delta;
+		//上面2个点（p0，p2）满足条件的时候，滤波p1  
+        //int x264_clip3( int v, int i_min, int i_max )用于限幅
         if( abs( p2 - p0 ) < beta )
         {
             if( tc0 )
                 pix[-2*xstride] = p1 + x264_clip3( (( p2 + ((p0 + q0 + 1) >> 1)) >> 1) - p1, -tc0, tc0 );
             tc++;
         }
+		//下面2个点（q0，q2）满足条件的时候，滤波q1
         if( abs( q2 - q0 ) < beta )
         {
             if( tc0 )
@@ -107,6 +136,8 @@ static ALWAYS_INLINE void deblock_edge_luma_c( pixel *pix, intptr_t xstride, int
         pix[ 0*xstride] = x264_clip_pixel( q0 - delta );    /* q0' */
     }
 }
+
+//去块效应滤波-普通滤波，Bs为1,2,3 
 static inline void deblock_luma_c( pixel *pix, intptr_t xstride, intptr_t ystride, int alpha, int beta, int8_t *tc0 )
 {
     for( int i = 0; i < 4; i++ )
@@ -116,6 +147,7 @@ static inline void deblock_luma_c( pixel *pix, intptr_t xstride, intptr_t ystrid
             pix += 4*ystride;
             continue;
         }
+		//滤4个像素
         for( int d = 0; d < 4; d++, pix += ystride )
             deblock_edge_luma_c( pix, xstride, alpha, beta, tc0[i] );
     }
@@ -125,12 +157,34 @@ static void deblock_h_luma_mbaff_c( pixel *pix, intptr_t stride, int alpha, int 
     for( int d = 0; d < 8; d++, pix += stride )
         deblock_edge_luma_c( pix, 1, alpha, beta, tc0[d>>1] );
 }
+
+//去块效应滤波-普通滤波，Bs为1,2,3  
+//垂直（Vertical）滤波器  
+//      边界  
+//         x  
+//         x  
+// 边界----------  
+//         x  
+//         x  
+//  
+//
 static void deblock_v_luma_c( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
 {
+	//xstride=stride（用于选择滤波的像素）  
+    //ystride=1 
     deblock_luma_c( pix, stride, 1, alpha, beta, tc0 );
 }
+
+//去块效应滤波-普通滤波，Bs为1,2,3  
+//水平（Horizontal）滤波器  
+//      边界  
+//       |  
+// x x x | x x x  
+//       |
 static void deblock_h_luma_c( pixel *pix, intptr_t stride, int alpha, int beta, int8_t *tc0 )
 {
+	//xstride=1（用于选择滤波的像素）  
+    //ystride=stride 
     deblock_luma_c( pix, 1, stride, alpha, beta, tc0 );
 }
 
@@ -180,15 +234,37 @@ static void deblock_h_chroma_422_c( pixel *pix, intptr_t stride, int alpha, int 
     deblock_chroma_c( pix, 4, 2, stride, alpha, beta, tc0 );
 }
 
+//水平滤波和垂直滤波通用的强滤波函数-处理1个点-Bs为4  
+//注意涉及到8个像素
 static ALWAYS_INLINE void deblock_edge_luma_intra_c( pixel *pix, intptr_t xstride, int alpha, int beta )
 {
+	//如果xstride=stride，ystride=1  
+    //就是处理纵向的6个像素  
+    //对应的是方块的横向边界的滤波。如下所示：  
+    //        p2  
+    //        p1  
+    //        p0  
+    //=====图像边界=====  
+    //        q0  
+    //        q1  
+    //        q2  
+    //  
+    //如果xstride=1，ystride=stride  
+    //就是处理纵向的6个像素  
+    //对应的是方块的横向边界的滤波，即如下所示：  
+    //          ||  
+    // p2 p1 p0 || q0 q1 q2  
+    //          ||  
+    //         边界  
+  
+    //注意：这里乘的是xstride
     int p2 = pix[-3*xstride];
     int p1 = pix[-2*xstride];
     int p0 = pix[-1*xstride];
     int q0 = pix[ 0*xstride];
     int q1 = pix[ 1*xstride];
     int q2 = pix[ 2*xstride];
-
+	//满足条件的时候，才滤波
     if( abs( p0 - q0 ) < alpha && abs( p1 - p0 ) < beta && abs( q1 - q0 ) < beta )
     {
         if( abs( p0 - q0 ) < ((alpha >> 2) + 2) )
@@ -219,18 +295,36 @@ static ALWAYS_INLINE void deblock_edge_luma_intra_c( pixel *pix, intptr_t xstrid
         }
     }
 }
+
+//水平滤波和垂直滤波通用的强滤波函数-Bs为4
 static inline void deblock_luma_intra_c( pixel *pix, intptr_t xstride, intptr_t ystride, int alpha, int beta )
 {
+	//循环处理16个点  
+    //处理完1个像素点之后，pix增加ystride 
     for( int d = 0; d < 16; d++, pix += ystride )
-        deblock_edge_luma_intra_c( pix, xstride, alpha, beta );
-}
+        deblock_edge_luma_intra_c( pix, xstride, alpha, beta ); //每次处理1个点
+} 
 static void deblock_h_luma_intra_mbaff_c( pixel *pix, intptr_t ystride, int alpha, int beta )
 {
     for( int d = 0; d < 8; d++, pix += ystride )
         deblock_edge_luma_intra_c( pix, 1, alpha, beta );
 }
+
+//垂直（Vertical）强滤波器-Bs为4  
+//      边界  
+//         x  
+//         x  
+// 边界----------  
+//         x  
+//         x 
 static void deblock_v_luma_intra_c( pixel *pix, intptr_t stride, int alpha, int beta )
 {
+	//注意  
+    //xstride=stride  
+    //ystride=1  
+    //处理完1个像素点之后，pix增加ystride  
+  
+    //水平滤波和垂直滤波通用的强滤波函数
     deblock_luma_intra_c( pix, stride, 1, alpha, beta );
 }
 static void deblock_h_luma_intra_c( pixel *pix, intptr_t stride, int alpha, int beta )
@@ -303,15 +397,21 @@ static void deblock_strength_c( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X264
     }
 }
 
+//普通滤波（Bs取值1-3）
 static ALWAYS_INLINE void deblock_edge( x264_t *h, pixel *pix, intptr_t i_stride, uint8_t bS[4], int i_qp,
                                         int a, int b, int b_chroma, x264_deblock_inter_t pf_inter )
 {
     int index_a = i_qp + a;
     int index_b = i_qp + b;
+	//根据QP，通过查表的方法获得是否滤波的门限值alpha和beta  
+    //alpha为边界两边2点的门限值  
+    //beta为边界一边最靠近边界的2点的门限值  
+    //总体说来，QP越大，alpha和beta越大，越有可能滤波 
     int alpha = alpha_table(index_a) << (BIT_DEPTH-8);
     int beta  = beta_table(index_b) << (BIT_DEPTH-8);
     int8_t tc[4];
 
+	//alpha或者beta有一个门限为0的时候，根本不用滤波  
     if( !M32(bS) || !alpha || !beta )
         return;
 
@@ -320,20 +420,28 @@ static ALWAYS_INLINE void deblock_edge( x264_t *h, pixel *pix, intptr_t i_stride
     tc[2] = (tc0_table(index_a)[bS[2]] << (BIT_DEPTH-8)) + b_chroma;
     tc[3] = (tc0_table(index_a)[bS[3]] << (BIT_DEPTH-8)) + b_chroma;
 
+	//滤波函数，通过传参而来
     pf_inter( pix, i_stride, alpha, beta, tc );
 }
 
+//强滤波（Bs取值为4）
 static ALWAYS_INLINE void deblock_edge_intra( x264_t *h, pixel *pix, intptr_t i_stride, uint8_t bS[4], int i_qp,
                                               int a, int b, int b_chroma, x264_deblock_intra_t pf_intra )
 {
     int index_a = i_qp + a;
     int index_b = i_qp + b;
+	//根据QP，通过查表的方法获得是否滤波的门限值alpha和beta  
+    //alpha为边界两边2点的门限值  
+    //beta为边界一边最靠近边界的2点的门限值  
+    //总体说来，QP越大，alpha和beta越大，越有可能滤波
     int alpha = alpha_table(index_a) << (BIT_DEPTH-8);
     int beta  = beta_table(index_b) << (BIT_DEPTH-8);
 
+	//alpha或者beta有一个门限为0的时候，根本不用滤波
     if( !alpha || !beta )
         return;
 
+	//滤波函数，通过传参而来
     pf_intra( pix, i_stride, alpha, beta );
 }
 
@@ -375,6 +483,7 @@ static ALWAYS_INLINE void x264_macroblock_cache_load_neighbours_deblock( x264_t 
         h->mb.i_neighbour |= MB_TOP;
 }
 
+//去块效应滤波
 void x264_frame_deblock_row( x264_t *h, int mb_y )
 {
     int b_interlaced = SLICE_MBAFF;
@@ -397,6 +506,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         int intra_cur = IS_INTRA( h->mb.type[mb_xy] );
         uint8_t (*bs)[8][4] = h->deblock_strength[mb_y&1][h->param.b_sliced_threads?mb_xy:mb_x];
 
+		//找到像素数据（宏块的大小是16x16）
         pixel *pixy = h->fdec->plane[0] + 16*mb_y*stridey  + 16*mb_x;
         pixel *pixuv = h->fdec->plane[1] + chroma_height*mb_y*strideuv + 16*mb_x;
 
@@ -408,10 +518,38 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
 
         int stride2y  = stridey << MB_INTERLACED;
         int stride2uv = strideuv << MB_INTERLACED;
+		//QP，用于计算环路滤波的门限值alpha和beta 
         int qp = h->mb.qp[mb_xy];
         int qpc = h->chroma_qp_table[qp];
         int first_edge_only = (h->mb.partition[mb_xy] == D_16x16 && !h->mb.cbp[mb_xy] && !intra_cur) || qp <= qp_thresh;
 
+		/* 
+         * 滤波顺序如下所示（大方框代表16x16块） 
+         * 
+         * +--4-+--4-+--4-+--4-+ 
+         * 0    1    2    3    | 
+         * +--5-+--5-+--5-+--5-+ 
+         * 0    1    2    3    | 
+         * +--6-+--6-+--6-+--6-+ 
+         * 0    1    2    3    | 
+         * +--7-+--7-+--7-+--7-+ 
+         * 0    1    2    3    | 
+         * +----+----+----+----+ 
+         * 
+         */  
+  
+  
+        //一个比较长的宏，用于进行环路滤波  
+        //根据不同的情况传递不同的参数  
+        //几个参数的含义：  
+        //intra：  
+        //为“_intra”的时候：  
+        //其中的“deblock_edge##intra()”展开为函数deblock_edge_intra()  
+        //其中的“h->loopf.deblock_luma##intra[dir]”展开为强滤波汇编函数h->loopf.deblock_luma_intra[dir]()  
+        //为“”（空），其中的“deblock_edge##intra()”展开为函数deblock_edge()  
+        //其中的“h->loopf.deblock_luma##intra[dir]”展开为普通滤波汇编函数h->loopf.deblock_luma[dir]()  
+        //dir：  
+        //决定了滤波的方向：0为水平滤波器（垂直边界），1为垂直滤波器（水平边界）
         #define FILTER( intra, dir, edge, qp, chroma_qp )\
         do\
         {\
@@ -448,6 +586,7 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
         {
             if( b_interlaced && h->mb.field[h->mb.i_mb_left_xy[0]] != MB_INTERLACED )
             {
+            	//隔行的
                 int luma_qp[2];
                 int chroma_qp[2];
                 int left_qp[2];
@@ -497,9 +636,13 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
             }
             else
             {
+            	//逐行的  
+  
+                //左边宏块的qp
                 int qpl = h->mb.qp[h->mb.i_mb_xy-1];
                 int qp_left = (qp + qpl + 1) >> 1;
                 int qpc_left = (qpc + h->chroma_qp_table[qpl] + 1) >> 1;
+				//Intra宏块左边宏块的qp
                 int intra_left = IS_INTRA( h->mb.type[h->mb.i_mb_xy-1] );
                 int intra_deblock = intra_cur || intra_left;
 
@@ -514,13 +657,14 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
                 }
 
                 if( intra_deblock )
-                    FILTER( _intra, 0, 0, qp_left, qpc_left );
+                    FILTER( _intra, 0, 0, qp_left, qpc_left ); //【0】强滤波，水平滤波器（垂直边界）
                 else
-                    FILTER(       , 0, 0, qp_left, qpc_left );
+                    FILTER(       , 0, 0, qp_left, qpc_left ); //【0】普通滤波，水平滤波器（垂直边界）
             }
         }
         if( !first_edge_only )
         {
+        	//普通滤波，水平滤波器（垂直边界）
             FILTER( , 0, 1, qp, qpc );
             FILTER( , 0, 2, qp, qpc );
             FILTER( , 0, 3, qp, qpc );
@@ -569,19 +713,20 @@ void x264_frame_deblock_row( x264_t *h, int mb_y )
 
                 if( (!b_interlaced || (!MB_INTERLACED && !h->mb.field[h->mb.i_mb_top_xy])) && intra_deblock )
                 {
-                    FILTER( _intra, 1, 0, qp_top, qpc_top );
+                    FILTER( _intra, 1, 0, qp_top, qpc_top ); //【4】普通滤波，垂直滤波器（水平边界）
                 }
                 else
                 {
                     if( intra_deblock )
                         M32( bs[1][0] ) = 0x03030303;
-                    FILTER(       , 1, 0, qp_top, qpc_top );
+                    FILTER(       , 1, 0, qp_top, qpc_top ); //【4】普通滤波，垂直滤波器（水平边界）
                 }
             }
         }
 
         if( !first_edge_only )
         {
+        	//普通滤波，垂直滤波器（水平边界）
             FILTER( , 1, 1, qp, qpc );
             FILTER( , 1, 2, qp, qpc );
             FILTER( , 1, 3, qp, qpc );
@@ -765,13 +910,18 @@ void x264_deblock_strength_msa( uint8_t nnz[X264_SCAN8_SIZE], int8_t ref[2][X264
 #endif
 #endif
 
+//去块效应滤波
 void x264_deblock_init( int cpu, x264_deblock_function_t *pf, int b_mbaff )
 {
+	//注意：标记“v”的垂直滤波器是处理水平边界用的  
+    //亮度-普通滤波器-边界强度Bs=1,2,3 
     pf->deblock_luma[1] = deblock_v_luma_c;
     pf->deblock_luma[0] = deblock_h_luma_c;
+	//色度的
     pf->deblock_chroma[1] = deblock_v_chroma_c;
     pf->deblock_h_chroma_420 = deblock_h_chroma_c;
     pf->deblock_h_chroma_422 = deblock_h_chroma_422_c;
+	//亮度-强滤波器-边界强度Bs=4
     pf->deblock_luma_intra[1] = deblock_v_luma_intra_c;
     pf->deblock_luma_intra[0] = deblock_h_luma_intra_c;
     pf->deblock_chroma_intra[1] = deblock_v_chroma_intra_c;

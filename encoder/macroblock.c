@@ -123,9 +123,27 @@ static ALWAYS_INLINE int array_non_zero( dctcoef *v, int i_count )
 /* This means that decimation can be done merely by adjusting the CBP and NNZ
  * rather than memsetting the coefficients. */
 
+//编码I16x16宏块-需要Hadamard变换  
+/* 
+ * 16x16 宏块 
+ * 
+ * +--------+--------+ 
+ * |                 |       D   D   D   D 
+ * |                 | 
+ * |                 |       D   D   D   D 
+ * +        +        +   + 
+ * |                 |       D   D   D   D 
+ * |                 | 
+ * |                 |       D   D   D   D 
+ * +--------+--------+ 
+ * 
+ */  
+//p代表分量
 static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
 {
+	//编码帧
     pixel *p_src = h->mb.pic.p_fenc[p];
+	//重建帧 
     pixel *p_dst = h->mb.pic.p_fdec[p];
 
     ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
@@ -139,7 +157,7 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
     if( h->mb.b_lossless )
         x264_predict_lossless_16x16( h, p, i_mode );
     else
-        h->predict_16x16[i_mode]( h->mb.pic.p_fdec[p] );
+        h->predict_16x16[i_mode]( h->mb.pic.p_fdec[p] ); //帧内预测.p_fdec是重建帧。p_fenc是编码帧。
 
     if( h->mb.b_lossless )
     {
@@ -159,15 +177,18 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
 
     CLEAR_16x16_NNZ( p );
 
-    h->dctf.sub16x16_dct( dct4x4, p_src, p_dst );
+    h->dctf.sub16x16_dct( dct4x4, p_src, p_dst ); //求残差，然后进行DCT变换
 
     if( h->mb.b_noise_reduction )
         for( int idx = 0; idx < 16; idx++ )
             h->quantf.denoise_dct( dct4x4[idx], h->nr_residual_sum[0], h->nr_offset[0], 16 );
 
+	//获取DC系数
     for( int idx = 0; idx < 16; idx++ )
     {
+    	//每个4x4DCT块的[0]元素 
         dct_dc4x4[block_idx_xy_1d[idx]] = dct4x4[idx][0];
+		//抽取出来之后，赋值0 
         dct4x4[idx][0] = 0;
     }
 
@@ -185,15 +206,20 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
     }
     else
     {
+    	//先分成4个8x8？
         for( int i8x8 = 0; i8x8 < 4; i8x8++ )
         {
+        	//每个8x8做4个4x4量化 
             nz = h->quantf.quant_4x4x4( &dct4x4[i8x8*4], h->quant4_mf[i_quant_cat][i_qp], h->quant4_bias[i_quant_cat][i_qp] );
             if( nz )
             {
                 block_cbp = 0xf;
                 FOREACH_BIT( idx, i8x8*4, nz )
                 {
+                	//建立重建的帧  
+                    //之子扫描
                     h->zigzagf.scan_4x4( h->dct.luma4x4[16*p+idx], dct4x4[idx] );
+					//反量化，用于重建图像
                     h->quantf.dequant_4x4( dct4x4[idx], h->dequant4_mf[i_quant_cat], i_qp );
                     if( decimate_score < 6 ) decimate_score += h->quantf.decimate_score15( h->dct.luma4x4[16*p+idx] );
                     h->mb.cache.non_zero_count[x264_scan8[16*p+idx]] = 1;
@@ -212,30 +238,36 @@ static void x264_mb_encode_i16x16( x264_t *h, int p, int i_qp )
     else
         h->mb.i_cbp_luma |= block_cbp;
 
+	//16个DC系数-Hadamard变换 
     h->dctf.dct4x4dc( dct_dc4x4 );
     if( h->mb.b_trellis )
         nz = x264_quant_luma_dc_trellis( h, dct_dc4x4, i_quant_cat, i_qp, ctx_cat_plane[DCT_LUMA_DC][p], 1, LUMA_DC+p );
     else
+		//DC-Hadamard变换之后-量化
         nz = h->quantf.quant_4x4_dc( dct_dc4x4, h->quant4_mf[i_quant_cat][i_qp][0]>>1, h->quant4_bias[i_quant_cat][i_qp][0]<<1 );
 
     h->mb.cache.non_zero_count[x264_scan8[LUMA_DC+p]] = nz;
     if( nz )
     {
+    	//之子扫描
         h->zigzagf.scan_4x4( h->dct.luma16x16_dc[p], dct_dc4x4 );
 
         /* output samples to fdec */
+		//DC-反变换
         h->dctf.idct4x4dc( dct_dc4x4 );
+		//DC-反量化
         h->quantf.dequant_4x4_dc( dct_dc4x4, h->dequant4_mf[i_quant_cat], i_qp );  /* XXX not inversed */
         if( block_cbp )
-            for( int i = 0; i < 16; i++ )
-                dct4x4[i][0] = dct_dc4x4[block_idx_xy_1d[i]];
+            for( int i = 0; i < 16; i++ ) //循环16个4x4DCT块
+                dct4x4[i][0] = dct_dc4x4[block_idx_xy_1d[i]]; //把DC系数重新赋值到每个DCT数组的[0]元素上
     }
 
     /* put pixels to fdec */
+	// fdec代表重建帧 
     if( block_cbp )
-        h->dctf.add16x16_idct( p_dst, dct4x4 );
+        h->dctf.add16x16_idct( p_dst, dct4x4 ); //DCT反变换后，叠加到预测数据上（通用）
     else if( nz )
-        h->dctf.add16x16_idct_dc( p_dst, dct_dc4x4 );
+        h->dctf.add16x16_idct_dc( p_dst, dct_dc4x4 ); //DCT反变换后，叠加到预测数据上（只有DC系数的时候）
 }
 
 /* Round down coefficients losslessly in DC-only chroma blocks.
@@ -497,8 +529,31 @@ void x264_mb_encode_chroma( x264_t *h, int b_inter, int i_qp )
         x264_mb_encode_chroma_internal( h, b_inter, i_qp, 1 );
 }
 
+//编码skip类型宏块 
 static void x264_macroblock_encode_skip( x264_t *h )
 {
+	/* 
+     * YUV420P的时候在这里相当于在non_zero_count[]填充了v（v=0）： 
+     * YUV422P，YUV444P的时候填充了w（w=0） 
+     *   | 
+     * --+-------------- 
+     *   | 0 0 0 0 0 0 0 0 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 0 0 0 0 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 w w w w 
+     *   | 0 0 0 0 w w w w 
+     *   | 0 0 0 0 0 0 0 0 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 v v v v 
+     *   | 0 0 0 0 w w w w 
+     *   | 0 0 0 0 w w w w 
+     */  
+    //填充non_zero_count[]
     M32( &h->mb.cache.non_zero_count[x264_scan8[ 0]] ) = 0;
     M32( &h->mb.cache.non_zero_count[x264_scan8[ 2]] ) = 0;
     M32( &h->mb.cache.non_zero_count[x264_scan8[ 8]] ) = 0;
@@ -514,6 +569,7 @@ static void x264_macroblock_encode_skip( x264_t *h )
         M32( &h->mb.cache.non_zero_count[x264_scan8[32+ 8]] ) = 0;
         M32( &h->mb.cache.non_zero_count[x264_scan8[32+10]] ) = 0;
     }
+	//CBP也赋值为0，即不对亮度和色度编码
     h->mb.i_cbp_luma = 0;
     h->mb.i_cbp_chroma = 0;
     h->mb.cbp[h->mb.i_mb_xy] = 0;
@@ -615,6 +671,9 @@ void x264_predict_lossless_16x16( x264_t *h, int p, int i_mode )
 /*****************************************************************************
  * x264_macroblock_encode:
  *****************************************************************************/
+/**
+ * 编码-残差DCT变换、量化-内部函数
+ */
 static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_count, int chroma )
 {
     int i_qp = h->mb.i_qp;
@@ -625,6 +684,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
     for( int p = 0; p < plane_count; p++ )
         h->mb.cache.non_zero_count[x264_scan8[LUMA_DC+p]] = 0;
 
+	//PCM，不常见
     if( h->mb.i_type == I_PCM )
     {
         /* if PCM is chosen, we need to store reconstructed frame data */
@@ -651,6 +711,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
         }
     }
 
+	//根据不同的宏块类型，进行编码 
     if( h->mb.i_type == P_SKIP )
     {
         /* don't do pskip motion compensation if it was already done in macroblock_analyse */
@@ -691,6 +752,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             }
         }
 
+		//编码skip类型宏块
         x264_macroblock_encode_skip( h );
         return;
     }
@@ -707,6 +769,22 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
     {
         h->mb.b_transform_8x8 = 0;
 
+		//Intra16x16宏块编码-需要Hadamard变换  
+        //分别编码Y，U，V  
+        /* 
+         * 16x16 宏块 
+         * 
+         * +--------+--------+ 
+         * |                 | 
+         * |                 | 
+         * |                 | 
+         * +        +        + 
+         * |                 | 
+         * |                 | 
+         * |                 | 
+         * +--------+--------+ 
+         * 
+         */
         for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             x264_mb_encode_i16x16( h, p, i_qp );
     }
@@ -735,8 +813,23 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             }
         }
     }
+	//Intra4x4类型
     else if( h->mb.i_type == I_4x4 )
     {
+    	/* 
+         * 帧内预测：16x16 宏块被划分为16个4x4子块 
+         * 
+         * +----+----+----+----+ 
+         * |    |    |    |    | 
+         * +----+----+----+----+ 
+         * |    |    |    |    | 
+         * +----+----+----+----+ 
+         * |    |    |    |    | 
+         * +----+----+----+----+ 
+         * |    |    |    |    | 
+         * +----+----+----+----+ 
+         * 
+         */
         h->mb.b_transform_8x8 = 0;
         /* If we already encoded 15 of the 16 i4x4 blocks, we don't have to do them again. */
         if( h->mb.i_skip_intra )
@@ -751,8 +844,10 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
             if( h->mb.i_skip_intra == 2 )
                 h->mc.memcpy_aligned( h->dct.luma4x4, h->mb.pic.i4x4_dct_buf, sizeof(h->mb.pic.i4x4_dct_buf) );
         }
+		//分别编码Y,U,V
         for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
         {
+        	//循环16次，编码16个Intra4x4宏块
             for( int i = (p == 0 && h->mb.i_skip_intra) ? 15 : 0; i < 16; i++ )
             {
                 pixel *p_dst = &h->mb.pic.p_fdec[p][block_idx_xy_fdec[i]];
@@ -761,11 +856,17 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 if( (h->mb.i_neighbour4[i] & (MB_TOPRIGHT|MB_TOP)) == MB_TOP )
                     /* emulate missing topright samples */
                     MPIXEL_X4( &p_dst[4-FDEC_STRIDE] ) = PIXEL_SPLAT_X4( p_dst[3-FDEC_STRIDE] );
-
+				//Intra4x4宏块编码  
+                /* 
+                 * +----+ 
+                 * |    | 
+                 * +----+ 
+                 */
                 x264_mb_encode_i4x4( h, p, i, i_qp, i_mode, 1 );
             }
         }
     }
+	//包含帧间预测
     else    /* Inter MB */
     {
         int i_decimate_mb = 0;
@@ -842,13 +943,30 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
             }
         }
-        else
+        else //最普通的情况 
         {
+        	/* 
+             * 帧间预测：16x16 宏块被划分为8x8 
+             * 每个8x8再次被划分为4x4 
+             * 
+             * ++====+====++====+====++ 
+             * ||    |    ||    |    || 
+             * ++====+====++====+====++ 
+             * ||    |    ||    |    || 
+             * ++====+====++====+====++ 
+             * ||    |    ||    |    || 
+             * ++====+====++====+====++ 
+             * ||    |    ||    |    || 
+             * ++====+====+=====+====++ 
+             * 
+             */
             ALIGNED_ARRAY_64( dctcoef, dct4x4,[16],[16] );
             for( int p = 0; p < plane_count; p++, i_qp = h->mb.i_chroma_qp )
             {
                 int quant_cat = p ? CQM_4PC : CQM_4PY;
                 CLEAR_16x16_NNZ( p );
+				//16x16DCT（实际上分解为16个4x4DCT）  
+                //求编码帧p_fenc和重建帧p_fdec之间的残差，然后进行DCT变换 
                 h->dctf.sub16x16_dct( dct4x4, h->mb.pic.p_fenc[p], h->mb.pic.p_fdec[p] );
 
                 if( h->mb.b_noise_reduction )
@@ -859,6 +977,7 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                 }
 
                 int plane_cbp = 0;
+				//16x16的块分成4个8x8的块
                 for( int i8x8 = 0; i8x8 < 4; i8x8++ )
                 {
                     int i_decimate_8x8 = b_decimate ? 0 : 6;
@@ -881,12 +1000,15 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     }
                     else
                     {
+                    	//8x8的块分成4个4x4的块，每个4x4的块再分别进行量化
                         nnz8x8 = nz = h->quantf.quant_4x4x4( &dct4x4[i8x8*4], h->quant4_mf[quant_cat][i_qp], h->quant4_bias[quant_cat][i_qp] );
                         if( nz )
                         {
                             FOREACH_BIT( idx, i8x8*4, nz )
                             {
+                            	//这几步用于建立重建帧 
                                 h->zigzagf.scan_4x4( h->dct.luma4x4[p*16+idx], dct4x4[idx] );
+								//反量化
                                 h->quantf.dequant_4x4( dct4x4[idx], h->dequant4_mf[quant_cat], i_qp );
                                 if( i_decimate_8x8 < 6 )
                                     i_decimate_8x8 += h->quantf.decimate_score16( h->dct.luma4x4[p*16+idx] );
@@ -914,6 +1036,8 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
                     h->mb.i_cbp_luma |= plane_cbp;
                     FOREACH_BIT( i8x8, 0, plane_cbp )
                     {
+                    	//用于建立重建帧  
+                        //残差进行DCT反变换之后，叠加到预测数据上
                         h->dctf.add8x8_idct( &h->mb.pic.p_fdec[p][(i8x8&1)*8 + (i8x8>>1)*8*FDEC_STRIDE], &dct4x4[i8x8*4] );
                     }
                 }
@@ -971,8 +1095,11 @@ static ALWAYS_INLINE void x264_macroblock_encode_internal( x264_t *h, int plane_
     }
 }
 
+//编码-残差DCT变换、量化
 void x264_macroblock_encode( x264_t *h )
 {
+	//编码-内部函数  
+    //YUV444相当于把YUV3个分量都当做Y编码
     if( CHROMA444 )
         x264_macroblock_encode_internal( h, 3, 0 );
     else

@@ -508,6 +508,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
 #define NUM_ROWS 3
 #define ROW_SATD (NUM_INTS + (h->mb.i_mb_y - h->i_threadslice_start))
 
+//一个MB的开销 
 static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
                                     x264_frame_t **frames, int p0, int p1, int b,
                                     int dist_scale_factor, int do_search[2], const x264_weight_t *w,
@@ -538,7 +539,9 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
     /* A small, arbitrary bias to avoid VBV problems caused by zero-residual lookahead blocks. */
     int lowres_penalty = 4;
 
+	//计算只涉及一个分量
     h->mb.pic.p_fenc[0] = h->mb.pic.fenc_buf;
+	//从低分辨率（1/2线性内插）图像中拷贝数据 
     h->mc.copy[PIXEL_8x8]( h->mb.pic.p_fenc[0], FENC_STRIDE, &fenc->lowres[0][i_pel_offset], i_stride, 8 );
 
     if( p0 == p1 )
@@ -599,17 +602,22 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
         COPY2_IF_LT( i_bcost, i_cost, list_used, 3 ); \
     }
 
+	//帧间编码（后面还有帧内编码）  
+  
+    //处理m[0] 
     m[0].i_pixel = PIXEL_8x8;
     m[0].p_cost_mv = a->p_cost_mv;
     m[0].i_stride[0] = i_stride;
     m[0].p_fenc[0] = h->mb.pic.p_fenc[0];
     m[0].weight = w;
     m[0].i_ref = 0;
+	//加载1/2插值像素点  
     LOAD_HPELS_LUMA( m[0].p_fref, fref0->lowres );
     m[0].p_fref_w = m[0].p_fref[0];
     if( w[0].weightfn )
         LOAD_WPELS_LUMA( m[0].p_fref_w, fenc->weighted[0] );
 
+	//双线预测，处理m[1]
     if( b_bidir )
     {
         ALIGNED_ARRAY_8( int16_t, dmv,[2],[2] );
@@ -638,6 +646,7 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
         else
             M64( dmv ) = 0;
 
+		//双向预测，其中包含了mc.avg[PIXEL_8x8]()  
         TRY_BIDIR( dmv[0], dmv[1], 0 );
         if( M64( dmv ) )
         {
@@ -688,6 +697,7 @@ static void x264_slicetype_mb_cost( x264_t *h, x264_mb_analysis_t *a,
                 }
             }
 
+			//运动搜索，开销存在m[l].cost中
             x264_me_search( h, &m[l], mvc, i_mvc );
             m[l].cost -= a->p_cost_mv[0]; // remove mvcost from skip mbs
             if( M32( m[l].mv ) )
@@ -702,6 +712,8 @@ skip_motionest:
             CP32( m[l].mv, fenc_mvs[l] );
             m[l].cost = *fenc_costs[l];
         }
+		//如果更小就拷贝  
+        //帧间编码开销，存储于i_bcost
         COPY2_IF_LT( i_bcost, m[l].cost, list_used, l+1 );
     }
 
@@ -709,6 +721,7 @@ skip_motionest:
         TRY_BIDIR( m[0].mv, m[1].mv, 5 );
 
 lowres_intra_mb:
+	//帧内编码
     if( !fenc->b_intra_calculated )
     {
         ALIGNED_ARRAY_16( pixel, edge,[36] );
@@ -723,7 +736,10 @@ lowres_intra_mb:
         for( int i = -1; i < 8; i++ )
             M32( &pix[i*FDEC_STRIDE-pixoff] ) = M32( &src[i*i_stride-pixoff] );
 
+		//8x8块的SAD/SATD计算  
+        //x3打表计算了V，H，DC三种模式，开销存储在satds[3]数组的3个元素中
         h->pixf.intra_mbcmp_x3_8x8c( h->mb.pic.p_fenc[0], pix, satds );
+		//帧内编码开销，存储于i_icost
         int i_icost = X264_MIN3( satds[0], satds[1], satds[2] );
 
         if( h->param.analyse.i_subpel_refine > 1 )
@@ -741,6 +757,7 @@ lowres_intra_mb:
         }
 
         i_icost = ((i_icost + intra_penalty) >> (BIT_DEPTH - 8)) + lowres_penalty;
+		//存一下 
         fenc->i_intra_cost[i_mb_xy] = i_icost;
         int i_icost_aq = i_icost;
         if( h->param.rc.i_aq_mode )
@@ -748,6 +765,7 @@ lowres_intra_mb:
         output_intra[ROW_SATD] += i_icost_aq;
         if( b_frame_score_mb )
         {
+        	//累加。[COST_EST]用于整帧的开销计算 
             output_intra[COST_EST] += i_icost;
             output_intra[COST_EST_AQ] += i_icost_aq;
         }
@@ -758,15 +776,17 @@ lowres_intra_mb:
     /* FIXME: Should we still forbid them now that we cache intra scores? */
     if( !b_bidir )
     {
+    	//帧内开销比帧间更小，b_intra就会取1 
         int i_icost = fenc->i_intra_cost[i_mb_xy];
         int b_intra = i_icost < i_bcost;
         if( b_intra )
         {
+        	//赋值给i_bcost 
             i_bcost = i_icost;
             list_used = 0;
         }
         if( b_frame_score_mb )
-            output_inter[INTRA_MBS] += b_intra;
+            output_inter[INTRA_MBS] += b_intra; //[INTRA_MBS]统计有多少个帧内模式的宏块 
     }
 
     /* In an I-frame, we've already added the results above in the intra section. */
@@ -779,11 +799,13 @@ lowres_intra_mb:
         if( b_frame_score_mb )
         {
             /* Don't use AQ-weighted costs for slicetype decision, only for ratecontrol. */
+			//累加。[COST_EST]用于整帧的开销计算 
             output_inter[COST_EST] += i_bcost;
             output_inter[COST_EST_AQ] += i_bcost_aq;
         }
     }
 
+	//存储开销i_bcost
     fenc->lowres_costs[b-p0][p1-b][i_mb_xy] = X264_MIN( i_bcost, LOWRES_COST_MASK ) + (list_used << LOWRES_COST_SHIFT);
 }
 #undef TRY_BIDIR
@@ -808,6 +830,7 @@ typedef struct
     int *output_intra;
 } x264_slicetype_slice_t;
 
+//一个slice的开销
 static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
 {
     x264_t *h = s->h;
@@ -824,12 +847,16 @@ static void x264_slicetype_slice_cost( x264_slicetype_slice_t *s )
     int start_x = h->mb.i_mb_width - 2 + do_edges;
     int end_x = 1 - do_edges;
 
+	//逐个计算每个MB的开销
     for( h->mb.i_mb_y = start_y; h->mb.i_mb_y >= end_y; h->mb.i_mb_y-- )
         for( h->mb.i_mb_x = start_x; h->mb.i_mb_x >= end_x; h->mb.i_mb_x-- )
             x264_slicetype_mb_cost( h, s->a, s->frames, s->p0, s->p1, s->b, s->dist_scale_factor,
                                     s->do_search, s->w, s->output_inter, s->output_intra );
 }
 
+//一帧图像的开销  
+//x264_slicetype_frame_cost(,,,p0,p1,b,)  
+// p0 b p1
 static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                                       x264_frame_t **frames, int p0, int p1, int b )
 {
@@ -842,6 +869,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
      * If we have tried this frame as P, then we have also tried
      * the preceding frames as B. (is this still true?) */
     /* Also check that we already calculated the row SATDs for the current frame. */
+	//如果已经计算过就不用算了
     if( fenc->i_cost_est[b-p0][p1-b] >= 0 && (!h->param.rc.i_vbv_buffer_size || fenc->i_row_satds[b-p0][p1-b][0] != -1) )
         i_score = fenc->i_cost_est[b-p0][p1-b];
     else
@@ -935,8 +963,11 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                 memset( output_inter[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
                 memset( output_intra[0], 0, (output_buf_size - PAD_SIZE) * sizeof(int) );
                 output_inter[0][NUM_ROWS] = output_intra[0][NUM_ROWS] = h->mb.i_mb_height;
+				//作为参数的结构体
                 x264_slicetype_slice_t s = (x264_slicetype_slice_t){ h, a, frames, p0, p1, b, dist_scale_factor, do_search, w,
                     output_inter[0], output_intra[0] };
+				//一个slice的开销  
+                //输入输出参数都在s结构体中
                 x264_slicetype_slice_cost( &s );
             }
 
@@ -955,14 +986,18 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
             int *row_satd_intra = fenc->i_row_satds[0][0];
             for( int i = 0; i < h->param.i_lookahead_threads; i++ )
             {
+            	//累加output_inter[]或output_intra[]  
+                //这2个变量中存储了整帧的开销 
                 if( b == p1 )
                     fenc->i_intra_mbs[b-p0] += output_inter[i][INTRA_MBS];
                 if( !fenc->b_intra_calculated )
                 {
+                	//帧内编码的代价
                     fenc->i_cost_est[0][0] += output_intra[i][COST_EST];
                     fenc->i_cost_est_aq[0][0] += output_intra[i][COST_EST_AQ];
                 }
 
+				//帧间编码的代价
                 fenc->i_cost_est[b-p0][p1-b] += output_inter[i][COST_EST];
                 fenc->i_cost_est_aq[b-p0][p1-b] += output_inter[i][COST_EST_AQ];
 
@@ -977,8 +1012,9 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                 }
             }
 
+			//一帧的开销
             i_score = fenc->i_cost_est[b-p0][p1-b];
-            if( b != p1 )
+            if( b != p1 ) //B帧
                 i_score = (uint64_t)i_score * 100 / (120 + h->param.i_bframe_bias);
             else
                 fenc->b_intra_calculated = 1;
@@ -988,6 +1024,7 @@ static int x264_slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
         }
     }
 
+	//返回一帧的开销值 
     return i_score;
 }
 
@@ -1467,11 +1504,14 @@ static int scenecut( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, in
 #define IS_X264_TYPE_AUTO_OR_I(x) ((x)==X264_TYPE_AUTO || IS_X264_TYPE_I(x))
 #define IS_X264_TYPE_AUTO_OR_B(x) ((x)==X264_TYPE_AUTO || IS_X264_TYPE_B(x))
 
+//分析帧的类型（I、B、P）
 void x264_slicetype_analyse( x264_t *h, int intra_minigop )
 {
     x264_mb_analysis_t a;
     x264_frame_t *frames[X264_LOOKAHEAD_MAX+3] = { NULL, };
     int num_frames, orig_num_frames, keyint_limit, framecnt;
+	// 确定最大的搜索长度  
+    // 在我的调试当中， h->lookahead->next.i_size = 4
     int i_max_search = X264_MIN( h->lookahead->next.i_size, X264_LOOKAHEAD_MAX );
     int vbv_lookahead = h->param.rc.i_vbv_buffer_size && h->param.rc.i_lookahead;
     /* For determinism we should limit the search to the number of frames lookahead has for sure
@@ -1486,7 +1526,9 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
 
     if( !h->lookahead->last_nonb )
         return;
+	//frames[0]指向上一次的非B帧
     frames[0] = h->lookahead->last_nonb;
+	//frames[] 依次指向 lookahead->next链表中的帧 
     for( framecnt = 0; framecnt < i_max_search; framecnt++ )
         frames[framecnt+1] = h->lookahead->next.list[framecnt];
 
@@ -1516,6 +1558,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
         return;
     }
 
+	//通过scenecut()函数判断是否有场景切换，从而确定I帧
     if( IS_X264_TYPE_AUTO_OR_I( frames[1]->i_type ) &&
         h->param.i_scenecut_threshold && scenecut( h, &a, frames, 0, 1, 1, orig_num_frames, i_max_search ) )
     {
@@ -1545,6 +1588,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
     int num_analysed_frames = num_frames;
     int reset_start;
 
+	//允许有B帧的时候 
     if( h->param.i_bframe )
     {
         if( h->param.i_bframe_adaptive == X264_B_ADAPT_TRELLIS )
@@ -1648,6 +1692,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
             num_bframes++;
 
         /* Check scenecut on the first minigop. */
+		// 如果B帧中， 有帧有场景切换， 则改变其为P帧 
         for( int j = 1; j < num_bframes+1; j++ )
         {
             if( frames[j]->i_forced_type == X264_TYPE_AUTO && IS_X264_TYPE_AUTO_OR_I( frames[j+1]->i_forced_type ) &&
@@ -1663,6 +1708,8 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
     }
     else
     {
+    	//h->param.i_bframe为 0  
+        //则所有的帧皆为P帧
         for( int j = 1; j <= num_frames; j++ )
             if( IS_X264_TYPE_AUTO_OR_B( frames[j]->i_type ) )
                 frames[j]->i_type = X264_TYPE_P;
@@ -1699,6 +1746,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
                 }
                 last_possible = 0;
                 if( frm->i_type != X264_TYPE_IDR )
+					//迫使为I帧
                     frm->i_type = h->param.b_open_gop ? X264_TYPE_I : X264_TYPE_IDR;
             }
             if( frm->i_type == X264_TYPE_I && keyframe_dist >= h->param.i_keyint_min )
@@ -1739,6 +1787,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
 #endif
 }
 
+//确定帧的类型（I、B、P）
 void x264_slicetype_decide( x264_t *h )
 {
     x264_frame_t *frames[X264_BFRAME_MAX+2];
@@ -1751,6 +1800,7 @@ void x264_slicetype_decide( x264_t *h )
 
     int lookahead_size = h->lookahead->next.i_size;
 
+	//遍历next队列
     for( int i = 0; i < h->lookahead->next.i_size; i++ )
     {
         if( h->param.b_vfr_input )
@@ -1782,6 +1832,7 @@ void x264_slicetype_decide( x264_t *h )
 
     if( h->param.rc.b_stat_read )
     {
+    	//b_stat_read在2pass模式的第2遍才不为0
         /* Use the frame types from the first pass */
         for( int i = 0; i < h->lookahead->next.i_size; i++ )
             h->lookahead->next.list[i]->i_type =
@@ -1791,12 +1842,14 @@ void x264_slicetype_decide( x264_t *h )
              || h->param.i_scenecut_threshold
              || h->param.rc.b_mb_tree
              || (h->param.rc.i_vbv_buffer_size && h->param.rc.i_lookahead) )
-        x264_slicetype_analyse( h, 0 );
+        x264_slicetype_analyse( h, 0 ); //分析帧的类型（I、B、P）
 
     for( bframes = 0, brefs = 0;; bframes++ )
     {
+    	//从next队列取出1个 
         frm = h->lookahead->next.list[bframes];
 
+		//BREF的处理
         if( frm->i_forced_type != X264_TYPE_AUTO && frm->i_type != frm->i_forced_type &&
             !(frm->i_forced_type == X264_TYPE_KEYFRAME && IS_X264_TYPE_I( frm->i_type )) )
         {
@@ -1807,6 +1860,7 @@ void x264_slicetype_decide( x264_t *h )
         if( frm->i_type == X264_TYPE_BREF && h->param.i_bframe_pyramid < X264_B_PYRAMID_NORMAL &&
             brefs == h->param.i_bframe_pyramid )
         {
+        	//BREF改成B 
             frm->i_type = X264_TYPE_B;
             x264_log( h, X264_LOG_WARNING, "B-ref at frame %d incompatible with B-pyramid %s \n",
                       frm->i_frame, x264_b_pyramid_names[h->param.i_bframe_pyramid] );
@@ -1821,6 +1875,7 @@ void x264_slicetype_decide( x264_t *h )
                       frm->i_frame, x264_b_pyramid_names[h->param.i_bframe_pyramid], h->param.i_frame_reference );
         }
 
+		//Keyframe处理
         if( frm->i_type == X264_TYPE_KEYFRAME )
             frm->i_type = h->param.b_open_gop ? X264_TYPE_I : X264_TYPE_IDR;
 
@@ -1853,6 +1908,7 @@ void x264_slicetype_decide( x264_t *h )
         if( frm->i_type == X264_TYPE_IDR )
         {
             /* Close GOP */
+			//设置当前帧为“上一个关键帧”
             h->lookahead->i_last_keyframe = frm->i_frame;
             frm->b_keyframe = 1;
             if( bframes > 0 )

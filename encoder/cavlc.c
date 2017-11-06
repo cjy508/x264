@@ -208,9 +208,11 @@ static const uint8_t ct_index[17] = {0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,3};
         *nnz = x264_cavlc_block_residual_internal(h,cat,l,nC);\
 }
 
+//QP
 static void x264_cavlc_qp_delta( x264_t *h )
 {
     bs_t *s = &h->out.bs;
+	//相减
     int i_dqp = h->mb.i_qp - h->mb.i_last_qp;
 
     /* Avoid writing a delta quant if we have an empty i16x16 block, e.g. in a completely
@@ -238,11 +240,15 @@ static void x264_cavlc_qp_delta( x264_t *h )
     bs_write_se( s, i_dqp );
 }
 
+//写入MVD
 static void x264_cavlc_mvd( x264_t *h, int i_list, int idx, int width )
 {
     bs_t *s = &h->out.bs;
     ALIGNED_4( int16_t mvp[2] );
+	//获得预测MV
     x264_mb_predict_mv( h, i_list, idx, width, mvp );
+	//实际存储MVD  
+    //MVD=MV-预测MV
     bs_write_se( s, h->mb.cache.mv[i_list][x264_scan8[idx]][0] - mvp[0] );
     bs_write_se( s, h->mb.cache.mv[i_list][x264_scan8[idx]][1] - mvp[1] );
 }
@@ -302,6 +308,7 @@ static ALWAYS_INLINE void x264_cavlc_partition_luma_residual( x264_t *h, int i8,
 }
 #endif
 
+//写入I宏块Header数据-CAVLC
 static void x264_cavlc_mb_header_i( x264_t *h, int i_mb_type, int i_mb_i_offset, int chroma )
 {
     bs_t *s = &h->out.bs;
@@ -320,13 +327,17 @@ static void x264_cavlc_mb_header_i( x264_t *h, int i_mb_type, int i_mb_i_offset,
         /* Prediction: Luma */
         for( int i = 0; i < 16; i += di )
         {
+        	//写入Intra4x4宏块的帧内预测模式  
+  
+            //获得帧内模式的预测值（通过左边和上边的块）
             int i_pred = x264_mb_predict_intra4x4_mode( h, i );
+			//获得当前帧内模式 
             int i_mode = x264_mb_pred_mode4x4_fix( h->mb.cache.intra4x4_pred_mode[x264_scan8[i]] );
 
             if( i_pred == i_mode )
-                bs_write1( s, 1 );  /* b_prev_intra4x4_pred_mode */
+                bs_write1( s, 1 );  //如果当前模式正好等于预测值/* b_prev_intra4x4_pred_mode */
             else
-                bs_write( s, 4, i_mode - (i_mode > i_pred) );
+                bs_write( s, 4, i_mode - (i_mode > i_pred) ); //否则传送差值（差值=当前模式-预测模式）
         }
 
     }
@@ -334,6 +345,7 @@ static void x264_cavlc_mb_header_i( x264_t *h, int i_mb_type, int i_mb_i_offset,
         bs_write_ue( s, x264_mb_chroma_pred_mode_fix[h->mb.i_chroma_pred_mode] );
 }
 
+//写入P宏块Header数据-CAVLC
 static ALWAYS_INLINE void x264_cavlc_mb_header_p( x264_t *h, int i_mb_type, int chroma )
 {
     bs_t *s = &h->out.bs;
@@ -343,13 +355,40 @@ static ALWAYS_INLINE void x264_cavlc_mb_header_p( x264_t *h, int i_mb_type, int 
         {
             bs_write1( s, 1 );
 
+			//写入参考帧序号
             if( h->mb.pic.i_fref[0] > 1 )
                 bs_write_te( s, h->mb.pic.i_fref[0] - 1, h->mb.cache.ref[0][x264_scan8[0]] );
+			/* 
+             * 向码流中写入MVD 
+             * 
+             * 运动矢量缓存mv[] 
+             * 第3个参数是mv数据的起始点（scan8[]序号），在这里是mv[scan8[0]] 
+             * 
+             * 写入了Y 
+             *   | 
+             * --+-------------- 
+             *   | 0 0 0 0 0 0 0 0 
+             *   | 0 0 0 0 Y 1 1 1 
+             *   | 0 0 0 0 1 1 1 1 
+             *   | 0 0 0 0 1 1 1 1 
+             *   | 0 0 0 0 1 1 1 1 
+             */
             x264_cavlc_mvd( h, 0, 0, 4 );
         }
         else if( h->mb.i_partition == D_16x8 )
         {
             bs_write_ue( s, 1 );
+			/* 
+             * 向码流中写入参考帧序号、MVD 
+             * 写入了Y 
+             *   | 
+             * --+-------------- 
+             *   | 0 0 0 0 0 0 0 0 
+             *   | 0 0 0 0 Y 1 1 1 
+             *   | 0 0 0 0 1 1 1 1 
+             *   | 0 0 0 0 Y 2 2 2 
+             *   | 0 0 0 0 2 2 2 2 
+             */
             if( h->mb.pic.i_fref[0] > 1 )
             {
                 bs_write_te( s, h->mb.pic.i_fref[0] - 1, h->mb.cache.ref[0][x264_scan8[0]] );
@@ -361,6 +400,17 @@ static ALWAYS_INLINE void x264_cavlc_mb_header_p( x264_t *h, int i_mb_type, int 
         else if( h->mb.i_partition == D_8x16 )
         {
             bs_write_ue( s, 2 );
+			/* 
+             * 向码流中写入参考帧序号、MVD 
+             * 写入了Y 
+             *   | 
+             * --+-------------- 
+             *   | 0 0 0 0 0 0 0 0 
+             *   | 0 0 0 0 Y 1 Y 2 
+             *   | 0 0 0 0 1 1 2 2 
+             *   | 0 0 0 0 1 1 2 2 
+             *   | 0 0 0 0 1 1 2 2 
+             */
             if( h->mb.pic.i_fref[0] > 1 )
             {
                 bs_write_te( s, h->mb.pic.i_fref[0] - 1, h->mb.cache.ref[0][x264_scan8[0]] );
@@ -393,6 +443,7 @@ static ALWAYS_INLINE void x264_cavlc_mb_header_p( x264_t *h, int i_mb_type, int 
             bs_write( s, 4, 0xf );
 
         /* ref0 */
+		//参考帧序号
         if( b_sub_ref )
         {
             bs_write_te( s, h->mb.pic.i_fref[0] - 1, h->mb.cache.ref[0][x264_scan8[0]] );
@@ -401,6 +452,7 @@ static ALWAYS_INLINE void x264_cavlc_mb_header_p( x264_t *h, int i_mb_type, int 
             bs_write_te( s, h->mb.pic.i_fref[0] - 1, h->mb.cache.ref[0][x264_scan8[12]] );
         }
 
+		//写入8x8块的子块的MVD 
         for( int i = 0; i < 4; i++ )
             x264_cavlc_8x8_mvd( h, i );
     }
@@ -536,11 +588,11 @@ void x264_macroblock_write_cavlc( x264_t *h )
 #endif
 
     if( h->sh.i_type == SLICE_TYPE_P )
-        x264_cavlc_mb_header_p( h, i_mb_type, chroma );
+        x264_cavlc_mb_header_p( h, i_mb_type, chroma ); //写入P宏块MB Header数据-CAVLC
     else if( h->sh.i_type == SLICE_TYPE_B )
-        x264_cavlc_mb_header_b( h, i_mb_type, chroma );
+        x264_cavlc_mb_header_b( h, i_mb_type, chroma ); //写入B宏块MB Header数据-CAVLC
     else //if( h->sh.i_type == SLICE_TYPE_I )
-        x264_cavlc_mb_header_i( h, i_mb_type, 0, chroma );
+        x264_cavlc_mb_header_i( h, i_mb_type, 0, chroma ); //写入I宏块MB Header数据-CAVLC
 
 #if !RDO_SKIP_BS
     i_mb_pos_tex = bs_pos( s );
@@ -573,6 +625,7 @@ void x264_macroblock_write_cavlc( x264_t *h )
     else if( h->mb.i_cbp_luma | h->mb.i_cbp_chroma )
     {
         x264_cavlc_qp_delta( h );
+		//残差数据
         x264_cavlc_macroblock_luma_residual( h, plane_count );
     }
     if( h->mb.i_cbp_chroma )

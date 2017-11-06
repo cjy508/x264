@@ -27,6 +27,7 @@
 
 #include "common.h"
 
+//获得预测的运动矢量MV（通过取中值）
 void x264_mb_predict_mv( x264_t *h, int i_list, int idx, int i_width, int16_t mvp[2] )
 {
     const int i8 = x264_scan8[idx];
@@ -106,13 +107,17 @@ void x264_mb_predict_mv( x264_t *h, int i_list, int idx, int i_width, int16_t mv
 
     int i_count = (i_refa == i_ref) + (i_refb == i_ref) + (i_refc == i_ref);
 
+	//如果可参考运动矢量的个数大于1个
     if( i_count > 1 )
     {
 median:
+		//取中值  
+        //x264_median_mv()内部调用了2次x264_median()，分别求了运动矢量的x分量和y分量的中值
         x264_median_mv( mvp, mv_a, mv_b, mv_c );
     }
-    else if( i_count == 1 )
+    else if( i_count == 1 ) //如果可参考运动矢量的个数只有1个
     {
+    	//直接赋值
         if( i_refa == i_ref )
             CP32( mvp, mv_a );
         else if( i_refb == i_ref )
